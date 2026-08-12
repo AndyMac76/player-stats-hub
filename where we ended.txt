@@ -1,0 +1,16 @@
+Found it — the one upcoming fixture in this window has no game_id yet from FBref (exactly the caveat I flagged earlier: match-report IDs aren't always assigned for fixtures that far out), so both its home/away rows landed with match_id = NULL, and grouping by match_id silently fails for null values.
+
+Fix: generate a stable synthetic ID for fixtures FBref hasn't assigned one to yet, so grouping never breaks. Also worth widening the gameweek window slightly since only 1 match showed up — MLS rounds often span more than 4 days.
+
+Edited 2 files
+Edited 2 files
+
+Now widen the dashboard's gameweek window slightly, since a 4-day window only caught one match:
+
+Editing file
+Editing file
+
+Also make the "couldn't resolve pair" warning show something useful instead of None, and skip gracefully rather than looking broken:
+
+Editing file
+Editing file

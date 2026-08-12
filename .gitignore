@@ -1,0 +1,10 @@
+chrome_profile/
+*.db
+*.db.bak
+*.bak
+__pycache__/
+.env
+*.pyc
+.claude/settings.local.json
+logs/
+downloaded_files/
