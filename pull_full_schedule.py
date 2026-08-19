@@ -51,6 +51,20 @@ def find_col(df, candidates):
     return None
 
 
+def parse_score(score_val):
+    """FBref scores look like '2–2' (en dash, not a hyphen). Returns
+    (home_goals, away_goals) or (None, None) if unparseable/unplayed."""
+    if pd.isna(score_val):
+        return None, None
+    parts = str(score_val).strip().split("–")
+    if len(parts) != 2:
+        return None, None
+    try:
+        return int(parts[0].strip()), int(parts[1].strip())
+    except ValueError:
+        return None, None
+
+
 def pull_league_schedule(conn, league_key, league_cfg):
     sd_league = league_cfg["sd_league"]
     season = league_cfg["current_season"]
@@ -103,6 +117,7 @@ def pull_league_schedule(conn, league_key, league_cfg):
 
         # A played match has a score; an unplayed one is typically NaN/blank.
         is_played = 1 if pd.notna(score) and str(score).strip() not in ("", "nan") else 0
+        home_goals, away_goals = parse_score(score) if is_played else (None, None)
 
         date_clean = None if pd.isna(date_val) else str(date_val)
 
@@ -117,15 +132,16 @@ def pull_league_schedule(conn, league_key, league_cfg):
         else:
             game_id_clean = str(game_id)
 
-        # Two rows per fixture - one per team's perspective.
-        rows.append((league_key, home, away, game_id_clean, date_clean, venue, season, is_played, 1))
-        rows.append((league_key, away, home, game_id_clean, date_clean, venue, season, is_played, 0))
+        # Two rows per fixture - one per team's perspective, goals_for/
+        # goals_against flipped accordingly.
+        rows.append((league_key, home, away, game_id_clean, date_clean, venue, season, is_played, 1, home_goals, away_goals))
+        rows.append((league_key, away, home, game_id_clean, date_clean, venue, season, is_played, 0, away_goals, home_goals))
 
     conn.executemany(
         """
         INSERT OR REPLACE INTO fixtures
-            (league, team, opponent, match_id, match_date, venue, season, is_played, is_home)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (league, team, opponent, match_id, match_date, venue, season, is_played, is_home, goals_for, goals_against)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )

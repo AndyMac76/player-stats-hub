@@ -449,6 +449,44 @@ def build_team_summary(season_df, match_df, fixtures_df):
     return rows
 
 
+def build_league_table(fixtures_df):
+    """Standard standings per league, current season only: played / won /
+    drawn / lost / goals for / against / difference / points, sorted by
+    points then goal difference then goals for (usual tiebreak order).
+    Needs goals_for/goals_against on fixtures (populated by
+    pull_full_schedule.py's score parsing) - a match missing that (e.g.
+    scraped before that column existed) is simply excluded rather than
+    guessed at."""
+    if fixtures_df.empty:
+        return []
+
+    current_season = fixtures_df["league"].map(CURRENT_SEASON_BY_LEAGUE)
+    played = fixtures_df[fixtures_df["goals_for"].notna() & (current_season == fixtures_df["season"])]
+
+    rows = []
+    for (league, team), group in played.groupby(["league", "team"]):
+        won = int((group["goals_for"] > group["goals_against"]).sum())
+        drawn = int((group["goals_for"] == group["goals_against"]).sum())
+        lost = int((group["goals_for"] < group["goals_against"]).sum())
+        gf = int(group["goals_for"].sum())
+        ga = int(group["goals_against"].sum())
+        rows.append({
+            "league": league, "team": team, "played": int(len(group)),
+            "won": won, "drawn": drawn, "lost": lost,
+            "goals_for": gf, "goals_against": ga, "goal_diff": gf - ga,
+            "points": won * 3 + drawn,
+        })
+
+    rows.sort(key=lambda r: (r["league"], -r["points"], -r["goal_diff"], -r["goals_for"]))
+
+    position_by_league = {}
+    for row in rows:
+        position_by_league[row["league"]] = position_by_league.get(row["league"], 0) + 1
+        row["position"] = position_by_league[row["league"]]
+
+    return rows
+
+
 def _zero_team_fixture_row():
     return {
         "matches_played": 0, "fixtures_in_window": 0,
@@ -695,6 +733,7 @@ def load_all_data():
     players = build_player_payload(match_df, fixtures_df)
     season_df = filter_to_current_season(match_df)
     team_rows = build_team_summary(season_df, match_df, fixtures_df)
+    league_table_rows = build_league_table(fixtures_df)
 
     present_fixture_leagues = {row[0] for row in conn.execute("SELECT DISTINCT league FROM fixtures")}
     fixture_leagues = [l for l in LEAGUE_ORDER if l in present_fixture_leagues] + \
@@ -707,14 +746,14 @@ def load_all_data():
             fixture_payloads.append(payload)
 
     conn.close()
-    return players, team_rows, fixture_payloads
+    return players, team_rows, fixture_payloads, league_table_rows
 
 
 # ---------------------------------------------------------------------------
 # HTML generation
 # ---------------------------------------------------------------------------
 
-def generate_html(players, team_rows, fixture_payloads):
+def generate_html(players, team_rows, fixture_payloads, league_table_rows):
     player_leagues = {p["league"] for p in players}
     fixture_leagues = {fp["league"] for fp in fixture_payloads}
     present = player_leagues | fixture_leagues
@@ -725,6 +764,7 @@ def generate_html(players, team_rows, fixture_payloads):
     players_json = json.dumps(players)
     teams_json = json.dumps(team_rows)
     fixtures_json = json.dumps(fixture_payloads)
+    league_table_json = json.dumps(league_table_rows)
     leagues_json = json.dumps(leagues)
     default_league_json = json.dumps(default_league)
     default_view_json = json.dumps(default_view)
@@ -1041,6 +1081,7 @@ def generate_html(players, team_rows, fixture_payloads):
         <button class="toggle-btn" data-view="fixtures">Fixtures</button>
         <button class="toggle-btn" data-view="players">Players</button>
         <button class="toggle-btn" data-view="teams">Teams</button>
+        <button class="toggle-btn" data-view="table">Table</button>
     </div>
     <div class="toggle-group" id="statModeToggle">
         <button class="toggle-btn active" data-mode="rolling">Last {FORM_WINDOW} Matches</button>
@@ -1072,12 +1113,33 @@ def generate_html(players, team_rows, fixture_payloads):
     <tbody id="teamTableBody"></tbody>
 </table>
 </div>
+
+<div id="leagueTableView">
+<table id="leagueTable">
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Team</th>
+            <th title="Played">P</th>
+            <th title="Won">W</th>
+            <th title="Drawn">D</th>
+            <th title="Lost">L</th>
+            <th title="Goals For">GF</th>
+            <th title="Goals Against">GA</th>
+            <th title="Goal Difference">GD</th>
+            <th title="Points">Pts</th>
+        </tr>
+    </thead>
+    <tbody id="leagueTableBody"></tbody>
+</table>
+</div>
 </div>
 
 <script>
     const players = {players_json};
     const teamRows = {teams_json};
     const fixturesData = {fixtures_json};
+    const leagueTableData = {league_table_json};
     const leagues = {leagues_json};
 
     let currentLeague = null;
@@ -1147,6 +1209,7 @@ def generate_html(players, team_rows, fixture_payloads):
         document.getElementById('fixturesView').style.display = view === 'fixtures' ? 'block' : 'none';
         document.getElementById('playerView').style.display = view === 'players' ? 'block' : 'none';
         document.getElementById('teamView').style.display = view === 'teams' ? 'block' : 'none';
+        document.getElementById('leagueTableView').style.display = view === 'table' ? 'block' : 'none';
         document.getElementById('statModeToggle').style.display = view === 'players' ? 'flex' : 'none';
         renderCurrentView();
     }}
@@ -1154,7 +1217,8 @@ def generate_html(players, team_rows, fixture_payloads):
     function renderCurrentView() {{
         if (currentView === 'fixtures') renderFixtureList();
         else if (currentView === 'players') renderTable();
-        else renderTeamTable();
+        else if (currentView === 'teams') renderTeamTable();
+        else renderLeagueTable();
     }}
 
     function renderLeaguePicker() {{
@@ -1216,8 +1280,10 @@ def generate_html(players, team_rows, fixture_payloads):
                 season: `Totals for this league's current season so far. A league whose season hasn't started yet will show all zeros here until matches are scraped. Hover a column header for its full name.`,
             }}[statMode];
             document.getElementById('subhead').textContent = subheadText;
-        }} else {{
+        }} else if (currentView === 'teams') {{
             document.getElementById('subhead').textContent = `Season-to-date squad totals per team. Hover a column header for its full name.`;
+        }} else {{
+            document.getElementById('subhead').textContent = `Current-season standings, sorted by points then goal difference. Click a team on the Fixtures/Players/Teams views for more detail.`;
         }}
     }}
 
@@ -1731,6 +1797,32 @@ def generate_html(players, team_rows, fixture_payloads):
         }});
     }}
 
+    // ---- League Table view ----
+
+    function renderLeagueTable() {{
+        renderSubhead();
+        const rows = leagueTableData.filter(t => t.league === currentLeague);
+        const tbody = document.getElementById('leagueTableBody');
+        if (!rows.length) {{
+            tbody.innerHTML = `<tr><td colspan="10" class="muted">No played matches with a recorded score yet this season for this league.</td></tr>`;
+            return;
+        }}
+        tbody.innerHTML = rows.map(t => `
+            <tr>
+                <td>${{t.position}}</td>
+                <td>${{t.team}}</td>
+                <td>${{t.played}}</td>
+                <td>${{t.won}}</td>
+                <td>${{t.drawn}}</td>
+                <td>${{t.lost}}</td>
+                <td>${{t.goals_for}}</td>
+                <td>${{t.goals_against}}</td>
+                <td>${{t.goal_diff > 0 ? '+' : ''}}${{t.goal_diff}}</td>
+                <td><strong>${{t.points}}</strong></td>
+            </tr>
+        `).join('');
+    }}
+
     // ---- URL deep-linking ----
 
     function applyUrlParams() {{
@@ -1742,7 +1834,7 @@ def generate_html(players, team_rows, fixture_payloads):
         if (leagueParam && leagues.includes(leagueParam)) {{
             currentLeague = leagueParam;
         }}
-        if (viewParam && ['fixtures', 'players', 'teams'].includes(viewParam)) {{
+        if (viewParam && ['fixtures', 'players', 'teams', 'table'].includes(viewParam)) {{
             currentView = viewParam;
         }}
         if (playerParam) {{
@@ -1770,6 +1862,7 @@ def generate_html(players, team_rows, fixture_payloads):
     document.getElementById('fixturesView').style.display = currentView === 'fixtures' ? 'block' : 'none';
     document.getElementById('playerView').style.display = currentView === 'players' ? 'block' : 'none';
     document.getElementById('teamView').style.display = currentView === 'teams' ? 'block' : 'none';
+    document.getElementById('leagueTableView').style.display = currentView === 'table' ? 'block' : 'none';
     document.getElementById('statModeToggle').style.display = currentView === 'players' ? 'flex' : 'none';
 
     if (hasLeagueFromUrl) {{
@@ -1786,13 +1879,13 @@ def generate_html(players, team_rows, fixture_payloads):
 
 
 def main():
-    players, team_rows, fixture_payloads = load_all_data()
+    players, team_rows, fixture_payloads, league_table_rows = load_all_data()
 
     if not players and not fixture_payloads:
         print("No data found - nothing to build.")
         return
 
-    html = generate_html(players, team_rows, fixture_payloads)
+    html = generate_html(players, team_rows, fixture_payloads, league_table_rows)
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         f.write(html)
 
