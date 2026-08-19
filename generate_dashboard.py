@@ -817,7 +817,7 @@ def load_own_betting_predictions(conn, league):
             "any_cold_start"]
     fixtures = [dict(zip(cols, row)) for row in rows]
     for fx in fixtures:
-        fx["match_date_display"] = fx["match_date"].split(" ")[0]
+        fx["match_date_display"] = format_window_date(fx["match_date"])
         fx["predicted_total_corners"] = round((fx["predicted_home_corners"] or 0) + (fx["predicted_away_corners"] or 0), 2)
         fx["predicted_total_fouls"] = round((fx["predicted_home_fouls"] or 0) + (fx["predicted_away_fouls"] or 0), 2)
         fx["any_cold_start"] = bool(fx["any_cold_start"])
@@ -828,8 +828,24 @@ def load_own_betting_predictions(conn, league):
             "fixtures": fixtures}
 
 
+_MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
 def format_window_date(raw):
-    return raw.split(" ")[0] if raw else raw
+    """'2026-08-23 00:00:00' -> '23 Aug 2026' - day before month throughout
+    this dashboard, not the raw ISO string or US-style month-first."""
+    if not raw:
+        return raw
+    date_part = raw.split(" ")[0]
+    parts = date_part.split("-")
+    if len(parts) != 3:
+        return date_part
+    year, month, day = parts
+    try:
+        month_name = _MONTH_ABBR[int(month) - 1]
+    except (ValueError, IndexError):
+        return date_part
+    return f"{int(day)} {month_name} {year}"
 
 
 def load_betting_data():
