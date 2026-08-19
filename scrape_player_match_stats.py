@@ -210,8 +210,14 @@ def scrape_league(conn, league_key, league_cfg):
                 try:
                     if match_info:
                         team_stats = common.get_team_match_stats(fbref, match_id)
+                        # match_info["date"] is a pandas Timestamp (straight from the
+                        # schedule dataframe) - sqlite3's binder doesn't accept those
+                        # directly, same reason write_fixtures_table() above stringifies
+                        # it too.
+                        raw_date = match_info.get("date")
+                        match_date_str = str(raw_date) if pd.notna(raw_date) else None
                         team_stats_rows = common.build_team_match_stats_rows(
-                            team_stats, match_id, match_info.get("date"), season, league_key,
+                            team_stats, match_id, match_date_str, season, league_key,
                             match_info.get("home_team"), match_info.get("away_team"),
                         )
                         if team_stats_rows:

@@ -204,6 +204,30 @@ LEAGUES = {
             "season_end": "May",
         },
     },
+    "L1": {
+        "sd_league": "ENG-League One",
+        "current_season": "2627",  # 2026/27 season - same EFL calendar as Championship
+        # Discovered by comparing the schedule page's 24-team list against
+        # actual match-report team names after scraping matchday 1. Every
+        # other short/full pairing (e.g. "Cambridge" / "Cambridge United")
+        # resolves fine via names_match()'s substring fallback - only these
+        # two don't share a substring relationship either direction.
+        "team_aliases": {
+            "mk dons": "milton keynes dons",
+            "sheffield weds": "sheffield wednesday",
+        },
+        "season_team_aliases": {},
+        "active": True,
+        "register": {
+            # Confirmed against a live fetch of fbref.com/en/comps/ (comp
+            # ID 15, /en/comps/15/history/League-One-Seasons) - "EFL League
+            # One", not just "League One", matching the "EFL Championship"
+            # naming convention already established for CHAMP.
+            "fbref_name": "EFL League One",
+            "season_start": "Aug",
+            "season_end": "May",
+        },
+    },
 }
 
 
