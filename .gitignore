@@ -8,3 +8,5 @@ __pycache__/
 .claude/settings.local.json
 logs/
 downloaded_files/
+*.joblib
+*_betting_features.json
