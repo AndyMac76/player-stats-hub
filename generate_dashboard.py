@@ -388,19 +388,45 @@ def build_season_totals(season_df):
     return totals
 
 
-def build_team_summary(season_df):
+def build_team_rolling_summary(match_df, fixtures_df):
+    """Per (league, team), average team-total stats over the team's last
+    FORM_WINDOW played fixtures - home and away combined into one number,
+    not split by venue. Mirrors build_team_fixture_series() above, but
+    summed to team level instead of kept per-player."""
+    team_fixtures = get_team_last_n_fixtures(fixtures_df, FORM_WINDOW)
+    rows = {}
+    for (league, team), match_ids in team_fixtures.items():
+        if not match_ids:
+            continue
+        subset = match_df[
+            (match_df["league"] == league) & (match_df["team"] == team) & (match_df["match_id"].isin(match_ids))
+        ]
+        n = len(match_ids)
+        row = {}
+        for c in CURATED_STAT_COLUMNS + GK_STAT_COLUMNS:
+            total = float(subset[c].fillna(0).sum())
+            row[c] = round(total / n, 2) if n else 0.0
+        rows[(league, team)] = row
+    return rows
+
+
+def build_team_summary(season_df, match_df, fixtures_df):
+    """Team-level summary for the Teams view: matches played, plus each
+    stat as two per-game averages (not totals) - the season's overall
+    average and the last-FORM_WINDOW-games average, each combining home
+    and away into a single number."""
     rows = []
     if season_df.empty:
         return rows
+    rolling_summary = build_team_rolling_summary(match_df, fixtures_df)
     for (league, team), group in season_df.groupby(["league", "team"]):
-        row = {
-            "league": league,
-            "team": team,
-            "squad_size": int(group["player_id"].nunique()),
-            "matches_played": int(group["match_id"].nunique()),
-        }
+        matches_played = int(group["match_id"].nunique())
+        row = {"league": league, "team": team, "matches_played": matches_played}
+        rolling_row = rolling_summary.get((league, team), {})
         for c in CURATED_STAT_COLUMNS + GK_STAT_COLUMNS:
-            row[c] = round(float(group[c].fillna(0).sum()), 1)
+            total = float(group[c].fillna(0).sum())
+            row[f"season_avg_{c}"] = round(total / matches_played, 2) if matches_played else 0.0
+            row[f"last5_avg_{c}"] = rolling_row.get(c, 0.0)
         rows.append(row)
     return rows
 
@@ -650,7 +676,7 @@ def load_all_data():
     fixtures_df = pd.read_sql("SELECT * FROM fixtures WHERE is_played = 1", conn)
     players = build_player_payload(match_df, fixtures_df)
     season_df = filter_to_current_season(match_df)
-    team_rows = build_team_summary(season_df)
+    team_rows = build_team_summary(season_df, match_df, fixtures_df)
 
     present_fixture_leagues = {row[0] for row in conn.execute("SELECT DISTINCT league FROM fixtures")}
     fixture_leagues = [l for l in LEAGUE_ORDER if l in present_fixture_leagues] + \
@@ -1024,24 +1050,7 @@ def generate_html(players, team_rows, fixture_payloads):
 
 <div id="teamView">
 <table id="teamTable">
-    <thead>
-        <tr>
-            <th data-key="team">Team</th>
-            <th data-key="squad_size" title="Squad Size">SQ</th>
-            <th data-key="matches_played" title="Matches Played">M</th>
-            <th data-key="goals" title="Goals">G</th>
-            <th data-key="assists" title="Assists">A</th>
-            <th data-key="shots" title="Shots">S</th>
-            <th data-key="shots_on_target" title="Shots on Target">SOT</th>
-            <th data-key="tackles_won" title="Tackles Won">TW</th>
-            <th data-key="interceptions" title="Interceptions">I</th>
-            <th data-key="fouls" title="Fouls Committed">F</th>
-            <th data-key="fouls_drawn" title="Fouls Drawn">FD</th>
-            <th data-key="cards_yellow" title="Yellow Cards">YC</th>
-            <th data-key="saves" title="Saves">SV</th>
-            <th data-key="goals_conceded" title="Goals Conceded">GC</th>
-        </tr>
-    </thead>
+    <thead id="teamTableHead"></thead>
     <tbody id="teamTableBody"></tbody>
 </table>
 </div>
@@ -1060,7 +1069,7 @@ def generate_html(players, team_rows, fixture_payloads):
     let pinnedPlayerId = null;
     let sortKey = "rolling_goals";
     let sortDir = -1;
-    let teamSortKey = "goals";
+    let teamSortKey = "season_avg_goals";
     let teamSortDir = -1;
     let activeMatchId = null;
     let expandedTeam = null;
@@ -1591,8 +1600,30 @@ def generate_html(players, team_rows, fixture_payloads):
 
     // ---- Teams view ----
 
-    const TEAM_COLUMNS = ["squad_size", "matches_played", "goals", "assists", "shots", "shots_on_target",
-                           "tackles_won", "interceptions", "fouls", "fouls_drawn", "cards_yellow", "saves", "goals_conceded"];
+    // Each stat shows two per-game averages, not a season total: the
+    // season's overall average and the last-{FORM_WINDOW}-games average,
+    // both combining home and away into a single number (not split by venue).
+    const TEAM_STAT_ORDER = ["goals", "assists", "shots", "shots_on_target", "tackles_won",
+                              "interceptions", "fouls", "fouls_drawn", "cards_yellow", "saves", "goals_conceded"];
+
+    const TEAM_COLUMNS = [{{ key: "matches_played", abbr: "M", full: "Matches Played" }}];
+    TEAM_STAT_ORDER.forEach(s => {{
+        TEAM_COLUMNS.push({{
+            key: `season_avg_${{s}}`, abbr: STAT_INFO[s].abbr,
+            full: `${{STAT_INFO[s].full}} - season average per game (home & away combined)`,
+        }});
+        TEAM_COLUMNS.push({{
+            key: `last5_avg_${{s}}`, abbr: `${{STAT_INFO[s].abbr}}·5`,
+            full: `${{STAT_INFO[s].full}} - average over last {FORM_WINDOW} games (home & away combined)`,
+        }});
+    }});
+
+    function renderTeamTableHead() {{
+        const headEl = document.getElementById('teamTableHead');
+        const cells = TEAM_COLUMNS.map(c => `<th data-key="${{c.key}}" title="${{c.full}}">${{c.abbr}}</th>`).join('');
+        headEl.innerHTML = `<tr><th data-key="team">Team</th>${{cells}}</tr>`;
+        setupTeamSorting();
+    }}
 
     function renderTeamRoster(team) {{
         const roster = players
@@ -1638,14 +1669,14 @@ def generate_html(players, team_rows, fixture_payloads):
         }});
         const tbody = document.getElementById('teamTableBody');
         if (!rows.length) {{
-            tbody.innerHTML = `<tr><td colspan="14" class="muted">No current-season data yet for this league.</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="${{TEAM_COLUMNS.length + 1}}" class="muted">No current-season data yet for this league.</td></tr>`;
             return;
         }}
         tbody.innerHTML = rows.map(t => {{
             const mainRow = `
                 <tr class="team-row" data-team="${{t.team}}">
                     <td>${{t.team}}</td>
-                    ${{TEAM_COLUMNS.map(c => `<td>${{t[c]}}</td>`).join('')}}
+                    ${{TEAM_COLUMNS.map(c => `<td>${{t[c.key]}}</td>`).join('')}}
                 </tr>
             `;
             if (t.team !== expandedTeam) return mainRow;
@@ -1720,7 +1751,7 @@ def generate_html(players, team_rows, fixture_payloads):
     setupViewToggle();
     setupStatModeToggle();
     renderPlayerTableHead();
-    setupTeamSorting();
+    renderTeamTableHead();
     document.getElementById('fixturesView').style.display = currentView === 'fixtures' ? 'block' : 'none';
     document.getElementById('playerView').style.display = currentView === 'players' ? 'block' : 'none';
     document.getElementById('teamView').style.display = currentView === 'teams' ? 'block' : 'none';
