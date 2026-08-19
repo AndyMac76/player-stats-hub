@@ -55,6 +55,8 @@ Usage:
 
 import json
 import sqlite3
+import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -65,6 +67,17 @@ DB_PATH = config.DB_PATH
 OUTPUT_FILE = "dashboard.html"
 FORM_WINDOW = config.ROLLING_WINDOW
 LAST_N = 5
+
+# The Betting tab reads predictions from a sibling project (The Corner
+# Kick) rather than duplicating its modeling pipeline here - same
+# sys.path-bootstrap pattern used for fbref_common. EPL-only: Corner
+# Kick's models are trained on football-data.co.uk's Premier League
+# data specifically, not FBref, and not any other league.
+BETTING_LEAGUE = "EPL"
+BETTING_DIR = Path(__file__).resolve().parent.parent / "The Corner Kick"
+BETTING_DB_PATH = BETTING_DIR / "corners.db"
+if str(BETTING_DIR) not in sys.path:
+    sys.path.insert(0, str(BETTING_DIR))
 
 LEAGUE_ORDER = list(config.LEAGUES.keys())
 CURRENT_SEASON_BY_LEAGUE = {key: cfg["current_season"] for key, cfg in config.LEAGUES.items()}
@@ -722,6 +735,36 @@ def build_fixtures_payload(conn, league):
 
 
 # ---------------------------------------------------------------------------
+# Betting data (The Corner Kick) - EPL only
+# ---------------------------------------------------------------------------
+
+def load_betting_data():
+    """Current gameweek's predictions from The Corner Kick, or None if that
+    project isn't available (different machine, corners.db not built yet,
+    etc.) - the dashboard should degrade gracefully, not crash, since this
+    is a separate project's data, not something Player Stats Hub owns."""
+    if not BETTING_DB_PATH.exists():
+        print(f"[Betting] {BETTING_DB_PATH} not found - Betting tab will show no data.")
+        return None
+
+    try:
+        import dashboard_data as betting_data
+        conn = sqlite3.connect(str(BETTING_DB_PATH))
+        round_number = betting_data.get_current_gameweek(conn)
+        if round_number is None:
+            conn.close()
+            return None
+        fixtures = betting_data.fetch_gameweek_data(conn, round_number)
+        for fx in fixtures:
+            fx["match_date_display"] = betting_data.format_date(fx["match_date"])
+        conn.close()
+        return {"round_number": round_number, "fixtures": fixtures}
+    except Exception as e:
+        print(f"[Betting] Couldn't load betting data: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
 
@@ -746,14 +789,17 @@ def load_all_data():
             fixture_payloads.append(payload)
 
     conn.close()
-    return players, team_rows, fixture_payloads, league_table_rows
+
+    betting_data = load_betting_data()
+
+    return players, team_rows, fixture_payloads, league_table_rows, betting_data
 
 
 # ---------------------------------------------------------------------------
 # HTML generation
 # ---------------------------------------------------------------------------
 
-def generate_html(players, team_rows, fixture_payloads, league_table_rows):
+def generate_html(players, team_rows, fixture_payloads, league_table_rows, betting_data):
     player_leagues = {p["league"] for p in players}
     fixture_leagues = {fp["league"] for fp in fixture_payloads}
     present = player_leagues | fixture_leagues
@@ -765,6 +811,8 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows):
     teams_json = json.dumps(team_rows)
     fixtures_json = json.dumps(fixture_payloads)
     league_table_json = json.dumps(league_table_rows)
+    betting_json = json.dumps(betting_data)
+    betting_league_json = json.dumps(BETTING_LEAGUE)
     leagues_json = json.dumps(leagues)
     default_league_json = json.dumps(default_league)
     default_view_json = json.dumps(default_view)
@@ -1031,6 +1079,67 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows):
     .team-roster-table {{ width: 100%; }}
     .team-roster-table th {{ font-size: 11px; color: var(--text-dim); text-align: left; padding: 4px 8px; }}
     .team-roster-table td {{ padding: 4px 8px; }}
+    .betting-note {{ font-size: 12px; color: var(--text-dim); margin-bottom: 16px; }}
+    .betting-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+        gap: 16px;
+    }}
+    .betting-card {{
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 16px 18px;
+    }}
+    .betting-card-head {{
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin-bottom: 4px;
+    }}
+    .betting-teams {{ font-size: 15px; font-weight: 600; }}
+    .betting-date {{ font-size: 11px; color: var(--text-dim); }}
+    .confidence-badge {{
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 600;
+        padding: 2px 7px;
+        border-radius: 10px;
+        margin-bottom: 10px;
+    }}
+    .confidence-badge.low {{ background: rgba(217, 92, 92, 0.18); color: var(--red); }}
+    .confidence-badge.estimated {{ background: rgba(224, 168, 60, 0.18); color: var(--amber); }}
+    .betting-xg {{ font-size: 13px; color: var(--text-dim); margin-bottom: 10px; }}
+    .betting-xg strong {{ color: var(--text); }}
+    .result-bar {{
+        display: flex;
+        height: 20px;
+        border-radius: 5px;
+        overflow: hidden;
+        margin-bottom: 4px;
+        font-size: 10px;
+        font-weight: 600;
+    }}
+    .result-bar span {{
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #ffffff;
+        white-space: nowrap;
+        overflow: hidden;
+    }}
+    .result-bar .rb-home {{ background: var(--green); }}
+    .result-bar .rb-draw {{ background: var(--muted); }}
+    .result-bar .rb-away {{ background: var(--accent); }}
+    .betting-legend {{ display: flex; justify-content: space-between; font-size: 10px; color: var(--text-dim); margin-bottom: 12px; }}
+    .betting-markets {{
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px 18px;
+        font-size: 12px;
+    }}
+    .betting-market-row {{ display: flex; justify-content: space-between; }}
+    .betting-market-label {{ color: var(--text-dim); }}
     .scouting-panel {{
         display: none;
         margin-bottom: 16px;
@@ -1082,6 +1191,7 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows):
         <button class="toggle-btn" data-view="players">Players</button>
         <button class="toggle-btn" data-view="teams">Teams</button>
         <button class="toggle-btn" data-view="table">Table</button>
+        <button class="toggle-btn" data-view="betting">Betting</button>
     </div>
     <div class="toggle-group" id="statModeToggle">
         <button class="toggle-btn active" data-mode="rolling">Last {FORM_WINDOW} Matches</button>
@@ -1133,6 +1243,10 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows):
     <tbody id="leagueTableBody"></tbody>
 </table>
 </div>
+
+<div id="bettingView">
+    <div id="bettingContent"></div>
+</div>
 </div>
 
 <script>
@@ -1140,6 +1254,8 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows):
     const teamRows = {teams_json};
     const fixturesData = {fixtures_json};
     const leagueTableData = {league_table_json};
+    const bettingData = {betting_json};
+    const BETTING_LEAGUE = {betting_league_json};
     const leagues = {leagues_json};
 
     let currentLeague = null;
@@ -1210,6 +1326,7 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows):
         document.getElementById('playerView').style.display = view === 'players' ? 'block' : 'none';
         document.getElementById('teamView').style.display = view === 'teams' ? 'block' : 'none';
         document.getElementById('leagueTableView').style.display = view === 'table' ? 'block' : 'none';
+        document.getElementById('bettingView').style.display = view === 'betting' ? 'block' : 'none';
         document.getElementById('statModeToggle').style.display = view === 'players' ? 'flex' : 'none';
         renderCurrentView();
     }}
@@ -1218,7 +1335,8 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows):
         if (currentView === 'fixtures') renderFixtureList();
         else if (currentView === 'players') renderTable();
         else if (currentView === 'teams') renderTeamTable();
-        else renderLeagueTable();
+        else if (currentView === 'table') renderLeagueTable();
+        else renderBettingView();
     }}
 
     function renderLeaguePicker() {{
@@ -1282,8 +1400,10 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows):
             document.getElementById('subhead').textContent = subheadText;
         }} else if (currentView === 'teams') {{
             document.getElementById('subhead').textContent = `Season-to-date squad totals per team. Hover a column header for its full name.`;
-        }} else {{
+        }} else if (currentView === 'table') {{
             document.getElementById('subhead').textContent = `Current-season standings, sorted by points then goal difference. Click a team on the Fixtures/Players/Teams views for more detail.`;
+        }} else {{
+            document.getElementById('subhead').textContent = `Match result, corners, cards, fouls and shots predictions from a separate modeling project - not derived from the stats data on this page.`;
         }}
     }}
 
@@ -1831,6 +1951,75 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows):
         `).join('');
     }}
 
+    // ---- Betting view (The Corner Kick) ----
+
+    function pct(v) {{
+        return (v === null || v === undefined) ? '—' : Math.round(v * 100) + '%';
+    }}
+
+    function num(v, decimals = 1) {{
+        return (v === null || v === undefined) ? '—' : v.toFixed(decimals);
+    }}
+
+    function renderBettingCard(fx) {{
+        const homePct = Math.max(0, Math.round((fx.home_win_prob || 0) * 100));
+        const drawPct = Math.max(0, Math.round((fx.draw_prob || 0) * 100));
+        const awayPct = Math.max(0, 100 - homePct - drawPct);
+
+        let badge = '';
+        if (fx.any_cold_start) {{
+            badge = `<div class="confidence-badge low">Low confidence - team(s) new to our data</div>`;
+        }} else if (fx.any_warm_start) {{
+            badge = `<div class="confidence-badge estimated">Estimated - early-season form</div>`;
+        }}
+
+        return `
+            <div class="betting-card">
+                <div class="betting-card-head">
+                    <span class="betting-teams">${{fx.home_team}} vs ${{fx.away_team}}</span>
+                    <span class="betting-date">${{fx.match_date_display || formatDate(fx.match_date)}}</span>
+                </div>
+                ${{badge}}
+                <div class="betting-xg">Expected goals: <strong>${{num(fx.expected_home_goals, 2)}} - ${{num(fx.expected_away_goals, 2)}}</strong></div>
+                <div class="result-bar">
+                    <span class="rb-home" style="width:${{homePct}}%">${{homePct >= 12 ? homePct + '%' : ''}}</span>
+                    <span class="rb-draw" style="width:${{drawPct}}%">${{drawPct >= 12 ? drawPct + '%' : ''}}</span>
+                    <span class="rb-away" style="width:${{awayPct}}%">${{awayPct >= 12 ? awayPct + '%' : ''}}</span>
+                </div>
+                <div class="betting-legend"><span>Home win</span><span>Draw</span><span>Away win</span></div>
+                <div class="betting-markets">
+                    <div class="betting-market-row"><span class="betting-market-label">BTTS</span><span>${{pct(fx.btts_yes_prob)}}</span></div>
+                    <div class="betting-market-row"><span class="betting-market-label">Over/Under 2.5</span><span>${{pct(fx.over_2_5_prob)}} / ${{pct(fx.under_2_5_prob)}}</span></div>
+                    <div class="betting-market-row"><span class="betting-market-label">Corners</span><span>${{num(fx.predicted_home_corners)}} - ${{num(fx.predicted_away_corners)}} (${{num(fx.predicted_total_corners)}})</span></div>
+                    <div class="betting-market-row"><span class="betting-market-label">Yellow cards</span><span>${{num(fx.predicted_home_yellows)}} - ${{num(fx.predicted_away_yellows)}}</span></div>
+                    <div class="betting-market-row"><span class="betting-market-label">Fouls</span><span>${{num(fx.predicted_home_fouls)}} - ${{num(fx.predicted_away_fouls)}} (${{num(fx.predicted_total_fouls)}})</span></div>
+                    <div class="betting-market-row"><span class="betting-market-label">Shots</span><span>${{num(fx.predicted_home_shots)}} - ${{num(fx.predicted_away_shots)}}</span></div>
+                    <div class="betting-market-row"><span class="betting-market-label">Shots on target</span><span>${{num(fx.predicted_home_sot)}} - ${{num(fx.predicted_away_sot)}}</span></div>
+                </div>
+            </div>
+        `;
+    }}
+
+    function renderBettingView() {{
+        renderSubhead();
+        const contentEl = document.getElementById('bettingContent');
+
+        if (currentLeague !== BETTING_LEAGUE) {{
+            contentEl.innerHTML = `<p class="muted">Betting predictions are only available for ${{BETTING_LEAGUE}} right now - the model behind this tab is trained on Premier League data specifically.</p>`;
+            return;
+        }}
+
+        if (!bettingData || !bettingData.fixtures || !bettingData.fixtures.length) {{
+            contentEl.innerHTML = `<p class="muted">No betting predictions available - The Corner Kick's data may not have run recently.</p>`;
+            return;
+        }}
+
+        contentEl.innerHTML = `
+            <div class="betting-note">Round ${{bettingData.round_number}} predictions from The Corner Kick - a separate modeling project, not derived from the FBref data elsewhere on this page. Not betting advice.</div>
+            <div class="betting-grid">${{bettingData.fixtures.map(renderBettingCard).join('')}}</div>
+        `;
+    }}
+
     // ---- URL deep-linking ----
 
     function applyUrlParams() {{
@@ -1842,7 +2031,7 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows):
         if (leagueParam && leagues.includes(leagueParam)) {{
             currentLeague = leagueParam;
         }}
-        if (viewParam && ['fixtures', 'players', 'teams', 'table'].includes(viewParam)) {{
+        if (viewParam && ['fixtures', 'players', 'teams', 'table', 'betting'].includes(viewParam)) {{
             currentView = viewParam;
         }}
         if (playerParam) {{
@@ -1871,6 +2060,7 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows):
     document.getElementById('playerView').style.display = currentView === 'players' ? 'block' : 'none';
     document.getElementById('teamView').style.display = currentView === 'teams' ? 'block' : 'none';
     document.getElementById('leagueTableView').style.display = currentView === 'table' ? 'block' : 'none';
+    document.getElementById('bettingView').style.display = currentView === 'betting' ? 'block' : 'none';
     document.getElementById('statModeToggle').style.display = currentView === 'players' ? 'flex' : 'none';
 
     if (hasLeagueFromUrl) {{
@@ -1887,19 +2077,20 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows):
 
 
 def main():
-    players, team_rows, fixture_payloads, league_table_rows = load_all_data()
+    players, team_rows, fixture_payloads, league_table_rows, betting_data = load_all_data()
 
     if not players and not fixture_payloads:
         print("No data found - nothing to build.")
         return
 
-    html = generate_html(players, team_rows, fixture_payloads, league_table_rows)
+    html = generate_html(players, team_rows, fixture_payloads, league_table_rows, betting_data)
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         f.write(html)
 
     total_fixtures = sum(len(p["fixtures"]) for p in fixture_payloads)
+    betting_note = f", {len(betting_data['fixtures'])} betting predictions" if betting_data else ", no betting data"
     print(f"Wrote {OUTPUT_FILE}: {len(players)} players, {len(team_rows)} team rows, "
-          f"{len(fixture_payloads)} leagues with fixtures ({total_fixtures} fixtures total).")
+          f"{len(fixture_payloads)} leagues with fixtures ({total_fixtures} fixtures total){betting_note}.")
 
 
 if __name__ == "__main__":
