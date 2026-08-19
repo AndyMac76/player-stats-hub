@@ -20,6 +20,9 @@
 #      step the database stays current but the actual page everyone looks
 #      at (including the desktop shortcuts and the live GitHub Pages copy)
 #      would silently go stale
+#   7. Commits and pushes dashboard.html so the live GitHub Pages copy
+#      (andymac76.github.io/player-stats-hub) stays in sync automatically -
+#      non-fatal if it fails (e.g. no internet), just logged and skipped
 #
 # Logs output to a timestamped file so a failure overnight is easy to
 # check the next day.
@@ -63,5 +66,19 @@ Write-Output "=== Recalculating rolling stats ===" | Tee-Object -FilePath $LogFi
 
 Write-Output "=== Regenerating dashboard.html ===" | Tee-Object -FilePath $LogFile -Append
 & $PythonExe "generate_dashboard.py" 2>&1 | Tee-Object -FilePath $LogFile -Append
+
+Write-Output "=== Publishing dashboard.html to GitHub Pages ===" | Tee-Object -FilePath $LogFile -Append
+try {
+    git add dashboard.html 2>&1 | Tee-Object -FilePath $LogFile -Append
+    $changes = git diff --cached --quiet; $hasChanges = ($LASTEXITCODE -ne 0)
+    if ($hasChanges) {
+        git commit -m "Auto-update dashboard.html ($Timestamp)" 2>&1 | Tee-Object -FilePath $LogFile -Append
+        git push 2>&1 | Tee-Object -FilePath $LogFile -Append
+    } else {
+        Write-Output "No changes to dashboard.html - nothing to publish." | Tee-Object -FilePath $LogFile -Append
+    }
+} catch {
+    Write-Output "WARNING: publishing to GitHub failed: $_" | Tee-Object -FilePath $LogFile -Append
+}
 
 Write-Output "=== Done: $(Get-Date -Format 'yyyy-MM-dd_HH-mm') ===" | Tee-Object -FilePath $LogFile -Append
