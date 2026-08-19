@@ -1293,9 +1293,17 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows):
         return fixturesData.find(d => d.league === currentLeague);
     }}
 
+    const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
     function formatDate(d) {{
         if (!d) return '';
-        return d.split(' ')[0];
+        // Parsed from the plain "YYYY-MM-DD" string, not via `new Date()` -
+        // that would parse as UTC midnight and can shift a day off in the
+        // browser's local timezone. UK convention: day before month.
+        const [year, month, day] = d.split(' ')[0].split('-');
+        const monthName = MONTH_NAMES[parseInt(month, 10) - 1];
+        if (!monthName) return d.split(' ')[0];
+        return `${{parseInt(day, 10)}} ${{monthName}} ${{year}}`;
     }}
 
     function renderFixtureList() {{
