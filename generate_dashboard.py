@@ -388,12 +388,9 @@ def build_season_totals(season_df):
     return totals
 
 
-def build_team_rolling_summary(match_df, fixtures_df):
-    """Per (league, team), average team-total stats over the team's last
-    FORM_WINDOW played fixtures - home and away combined into one number,
-    not split by venue. Mirrors build_team_fixture_series() above, but
-    summed to team level instead of kept per-player."""
-    team_fixtures = get_team_last_n_fixtures(fixtures_df, FORM_WINDOW)
+def _team_match_averages(match_df, team_fixtures):
+    """(league, team) -> {stat: avg}, averaging each stat's team-total
+    over the given (league, team) -> match_ids mapping."""
     rows = {}
     for (league, team), match_ids in team_fixtures.items():
         if not match_ids:
@@ -410,23 +407,44 @@ def build_team_rolling_summary(match_df, fixtures_df):
     return rows
 
 
+def build_team_rolling_summary(match_df, fixtures_df):
+    """Per (league, team), average team-total stats over the team's last
+    FORM_WINDOW HOME fixtures, and separately its last FORM_WINDOW AWAY
+    fixtures - kept apart rather than blended, since home/away form can
+    differ a lot. Returns (home_rows, away_rows)."""
+    home_fixtures = get_team_last_n_fixtures(fixtures_df[fixtures_df["is_home"] == 1], FORM_WINDOW)
+    away_fixtures = get_team_last_n_fixtures(fixtures_df[fixtures_df["is_home"] == 0], FORM_WINDOW)
+    return _team_match_averages(match_df, home_fixtures), _team_match_averages(match_df, away_fixtures)
+
+
 def build_team_summary(season_df, match_df, fixtures_df):
     """Team-level summary for the Teams view: matches played, plus each
-    stat as two per-game averages (not totals) - the season's overall
-    average and the last-FORM_WINDOW-games average, each combining home
-    and away into a single number."""
+    stat as four per-game averages (not totals) - season-so-far and
+    last-FORM_WINDOW-games, each split into home and away rather than
+    blended into one number."""
     rows = []
     if season_df.empty:
         return rows
-    rolling_summary = build_team_rolling_summary(match_df, fixtures_df)
+    last5_home, last5_away = build_team_rolling_summary(match_df, fixtures_df)
+
     for (league, team), group in season_df.groupby(["league", "team"]):
         matches_played = int(group["match_id"].nunique())
         row = {"league": league, "team": team, "matches_played": matches_played}
-        rolling_row = rolling_summary.get((league, team), {})
+
+        home_group = group[group["venue"] == "Home"]
+        away_group = group[group["venue"] == "Away"]
+        home_matches = home_group["match_id"].nunique()
+        away_matches = away_group["match_id"].nunique()
+        l5h = last5_home.get((league, team), {})
+        l5a = last5_away.get((league, team), {})
+
         for c in CURATED_STAT_COLUMNS + GK_STAT_COLUMNS:
-            total = float(group[c].fillna(0).sum())
-            row[f"season_avg_{c}"] = round(total / matches_played, 2) if matches_played else 0.0
-            row[f"last5_avg_{c}"] = rolling_row.get(c, 0.0)
+            home_total = float(home_group[c].fillna(0).sum())
+            away_total = float(away_group[c].fillna(0).sum())
+            row[f"season_avg_home_{c}"] = round(home_total / home_matches, 2) if home_matches else 0.0
+            row[f"season_avg_away_{c}"] = round(away_total / away_matches, 2) if away_matches else 0.0
+            row[f"last5_avg_home_{c}"] = l5h.get(c, 0.0)
+            row[f"last5_avg_away_{c}"] = l5a.get(c, 0.0)
         rows.append(row)
     return rows
 
@@ -1069,7 +1087,7 @@ def generate_html(players, team_rows, fixture_payloads):
     let pinnedPlayerId = null;
     let sortKey = "rolling_goals";
     let sortDir = -1;
-    let teamSortKey = "season_avg_goals";
+    let teamSortKey = "season_avg_home_goals";
     let teamSortDir = -1;
     let activeMatchId = null;
     let expandedTeam = null;
@@ -1600,22 +1618,19 @@ def generate_html(players, team_rows, fixture_payloads):
 
     // ---- Teams view ----
 
-    // Each stat shows two per-game averages, not a season total: the
-    // season's overall average and the last-{FORM_WINDOW}-games average,
-    // both combining home and away into a single number (not split by venue).
+    // Each stat shows four per-game averages, not a season total: season
+    // home avg, season away avg, last-{FORM_WINDOW}-games home avg, and
+    // last-{FORM_WINDOW}-games away avg - kept separate, not blended.
     const TEAM_STAT_ORDER = ["goals", "assists", "shots", "shots_on_target", "tackles_won",
                               "interceptions", "fouls", "fouls_drawn", "cards_yellow", "saves", "goals_conceded"];
 
     const TEAM_COLUMNS = [{{ key: "matches_played", abbr: "M", full: "Matches Played" }}];
     TEAM_STAT_ORDER.forEach(s => {{
-        TEAM_COLUMNS.push({{
-            key: `season_avg_${{s}}`, abbr: STAT_INFO[s].abbr,
-            full: `${{STAT_INFO[s].full}} - season average per game (home & away combined)`,
-        }});
-        TEAM_COLUMNS.push({{
-            key: `last5_avg_${{s}}`, abbr: `${{STAT_INFO[s].abbr}}·5`,
-            full: `${{STAT_INFO[s].full}} - average over last {FORM_WINDOW} games (home & away combined)`,
-        }});
+        const abbr = STAT_INFO[s].abbr, full = STAT_INFO[s].full;
+        TEAM_COLUMNS.push({{ key: `season_avg_home_${{s}}`, abbr: `${{abbr}}H`, full: `${{full}} - season average per HOME game` }});
+        TEAM_COLUMNS.push({{ key: `season_avg_away_${{s}}`, abbr: `${{abbr}}A`, full: `${{full}} - season average per AWAY game` }});
+        TEAM_COLUMNS.push({{ key: `last5_avg_home_${{s}}`, abbr: `${{abbr}}5H`, full: `${{full}} - average over last {FORM_WINDOW} HOME games` }});
+        TEAM_COLUMNS.push({{ key: `last5_avg_away_${{s}}`, abbr: `${{abbr}}5A`, full: `${{full}} - average over last {FORM_WINDOW} AWAY games` }});
     }});
 
     function renderTeamTableHead() {{

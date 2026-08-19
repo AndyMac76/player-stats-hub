@@ -52,7 +52,7 @@ ROLLING_WINDOW = 5
 # relied on the way it can for EPL - every variant needs its own entry.
 _MLS_TEAM_ALIASES = {
     "atlanta united": "atlanta united", "atlanta united fc": "atlanta united",
-    "atlanta": "atlanta united",
+    "atlanta": "atlanta united", "atlanta utd": "atlanta united",
     "austin fc": "austin fc", "austin": "austin fc",
     "charlotte fc": "charlotte fc", "charlotte": "charlotte fc",
     "chicago fire": "chicago fire", "chicago fire fc": "chicago fire",
@@ -72,15 +72,20 @@ _MLS_TEAM_ALIASES = {
     "los angeles fc": "los angeles fc", "lafc": "los angeles fc",
     "inter miami": "inter miami", "inter miami cf": "inter miami", "miami": "inter miami",
     "minnesota united": "minnesota united", "minnesota united fc": "minnesota united",
-    "minnesota": "minnesota united",
+    "minnesota": "minnesota united", "minnesota utd": "minnesota united",
     "cf montreal": "cf montreal", "cf montréal": "cf montreal", "montreal": "cf montreal",
     "nashville sc": "nashville sc", "nashville": "nashville sc",
     "new england revolution": "new england revolution", "new england": "new england revolution",
-    "revolution": "new england revolution",
+    "revolution": "new england revolution", "ne revolution": "new england revolution",
     "new york city fc": "new york city fc", "nycfc": "new york city fc",
     "new york city": "new york city fc",
-    "new york red bulls": "new york red bulls", "ny red bulls": "new york red bulls",
-    "red bulls": "new york red bulls",
+    # FBref's match-report pages use "Red Bull New York" - that's the
+    # canonical form here (not "New York Red Bulls", despite that being
+    # the club's more commonly-known name), so every variant needs to
+    # resolve to the same string the actual scraped data uses.
+    "new york red bulls": "red bull new york", "ny red bulls": "red bull new york",
+    "red bulls": "red bull new york", "red bull new york": "red bull new york",
+    "rb new york": "red bull new york",
     "orlando city": "orlando city", "orlando city sc": "orlando city", "orlando": "orlando city",
     "philadelphia union": "philadelphia union", "philadelphia": "philadelphia union",
     "portland timbers": "portland timbers", "timbers": "portland timbers",
@@ -88,7 +93,7 @@ _MLS_TEAM_ALIASES = {
     "real salt lake": "real salt lake", "rsl": "real salt lake",
     "san diego fc": "san diego fc", "san diego": "san diego fc",
     "san jose earthquakes": "san jose earthquakes", "earthquakes": "san jose earthquakes",
-    "san jose": "san jose earthquakes",
+    "san jose": "san jose earthquakes", "sj earthquakes": "san jose earthquakes",
     "seattle sounders": "seattle sounders", "seattle sounders fc": "seattle sounders",
     "sounders": "seattle sounders", "seattle": "seattle sounders",
     "st. louis city": "st louis city", "st louis city": "st louis city",
