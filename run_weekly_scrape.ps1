@@ -16,6 +16,10 @@
 #      being present)
 #   4. Pulls season-level aggregates into player_season_stats
 #   5. Recalculates the rolling 5-match averages into player_rolling_stats
+#   6. Regenerates dashboard.html from the refreshed data - without this
+#      step the database stays current but the actual page everyone looks
+#      at (including the desktop shortcuts and the live GitHub Pages copy)
+#      would silently go stale
 #
 # Logs output to a timestamped file so a failure overnight is easy to
 # check the next day.
@@ -56,5 +60,8 @@ Write-Output "=== Pulling season aggregates ===" | Tee-Object -FilePath $LogFile
 
 Write-Output "=== Recalculating rolling stats ===" | Tee-Object -FilePath $LogFile -Append
 & $PythonExe "rolling_stats.py" 2>&1 | Tee-Object -FilePath $LogFile -Append
+
+Write-Output "=== Regenerating dashboard.html ===" | Tee-Object -FilePath $LogFile -Append
+& $PythonExe "generate_dashboard.py" 2>&1 | Tee-Object -FilePath $LogFile -Append
 
 Write-Output "=== Done: $(Get-Date -Format 'yyyy-MM-dd_HH-mm') ===" | Tee-Object -FilePath $LogFile -Append
