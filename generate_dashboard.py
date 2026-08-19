@@ -68,12 +68,13 @@ OUTPUT_FILE = "dashboard.html"
 FORM_WINDOW = config.ROLLING_WINDOW
 LAST_N = 5
 
-# The Betting tab reads predictions from a sibling project (The Corner
-# Kick) rather than duplicating its modeling pipeline here - same
-# sys.path-bootstrap pattern used for fbref_common. EPL-only: Corner
-# Kick's models are trained on football-data.co.uk's Premier League
-# data specifically, not FBref, and not any other league.
-BETTING_LEAGUE = "EPL"
+# The Betting tab's EPL data reads predictions from a sibling project
+# (The Corner Kick) rather than duplicating its modeling pipeline here -
+# same sys.path-bootstrap pattern used for fbref_common. Corner Kick's
+# models are trained on football-data.co.uk's Premier League data
+# specifically, not FBref, so this only ever covers EPL - other leagues'
+# betting data (if any) comes from this project's own team_stat_predictions
+# table instead (see load_own_betting_predictions()).
 BETTING_DIR = Path(__file__).resolve().parent.parent / "The Corner Kick"
 BETTING_DB_PATH = BETTING_DIR / "corners.db"
 if str(BETTING_DIR) not in sys.path:
@@ -735,16 +736,23 @@ def build_fixtures_payload(conn, league):
 
 
 # ---------------------------------------------------------------------------
-# Betting data (The Corner Kick) - EPL only
+# Betting data - keyed by league, since the two sources have different
+# shapes: EPL comes from The Corner Kick (a separate project, richer
+# prediction set including goals/result/BTTS/over-under, trained on 7
+# seasons of football-data.co.uk history); any other league (currently
+# just MLS) comes from THIS project's own team_stat_predictions table
+# (corners/cards/fouls/shots/SOT only, trained on FBref-scraped team
+# stats - see train_betting_models.py/predict_betting_stats.py). A
+# league with neither source simply has no key in the returned dict.
 # ---------------------------------------------------------------------------
 
-def load_betting_data():
-    """Current gameweek's predictions from The Corner Kick, or None if that
-    project isn't available (different machine, corners.db not built yet,
-    etc.) - the dashboard should degrade gracefully, not crash, since this
-    is a separate project's data, not something Player Stats Hub owns."""
+def load_corner_kick_data():
+    """EPL only. None if The Corner Kick isn't available on this machine
+    (different machine, corners.db not built yet, etc.) - degrade
+    gracefully rather than crash, since this is a separate project's
+    data, not something Player Stats Hub owns."""
     if not BETTING_DB_PATH.exists():
-        print(f"[Betting] {BETTING_DB_PATH} not found - Betting tab will show no data.")
+        print(f"[Betting] {BETTING_DB_PATH} not found - no EPL betting data.")
         return None
 
     try:
@@ -758,10 +766,89 @@ def load_betting_data():
         for fx in fixtures:
             fx["match_date_display"] = betting_data.format_date(fx["match_date"])
         conn.close()
-        return {"round_number": round_number, "fixtures": fixtures}
+        return {"source": "corner_kick", "source_label": "The Corner Kick",
+                "window_label": f"Round {round_number}", "fixtures": fixtures}
     except Exception as e:
-        print(f"[Betting] Couldn't load betting data: {e}")
+        print(f"[Betting] Couldn't load Corner Kick data: {e}")
         return None
+
+
+def load_own_betting_predictions(conn, league):
+    """corners/cards/fouls/shots/SOT predictions for one league's current
+    gameweek, from this project's own team_stat_predictions table.
+    Normalizes field names to match The Corner Kick's schema (e.g.
+    predicted_home_cards -> predicted_home_yellows) so the dashboard's
+    fixture-card renderer needs no per-source branching for the markets
+    it has in common - only the goals/result section (which this source
+    doesn't produce) differs."""
+    table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='team_stat_predictions'"
+    ).fetchone()
+    if not table_exists:
+        return None
+
+    window_days = GAMEWEEK_WINDOW_DAYS.get(league, 4)
+    match_ids, window_start, window_end = common.get_current_gameweek_match_ids(conn, league, window_days)
+    if not match_ids:
+        return None
+
+    placeholders = ",".join("?" for _ in match_ids)
+    rows = conn.execute(f"""
+        SELECT match_id, match_date, home_team, away_team,
+               predicted_home_corners, predicted_away_corners,
+               predicted_home_cards, predicted_away_cards,
+               predicted_home_fouls, predicted_away_fouls,
+               predicted_home_shots, predicted_away_shots,
+               predicted_home_sot, predicted_away_sot,
+               cold_start
+        FROM team_stat_predictions
+        WHERE league = ? AND match_id IN ({placeholders})
+        ORDER BY match_date ASC
+    """, (league, *match_ids)).fetchall()
+    if not rows:
+        return None
+
+    cols = ["match_id", "match_date", "home_team", "away_team",
+            "predicted_home_corners", "predicted_away_corners",
+            "predicted_home_yellows", "predicted_away_yellows",
+            "predicted_home_fouls", "predicted_away_fouls",
+            "predicted_home_shots", "predicted_away_shots",
+            "predicted_home_sot", "predicted_away_sot",
+            "any_cold_start"]
+    fixtures = [dict(zip(cols, row)) for row in rows]
+    for fx in fixtures:
+        fx["match_date_display"] = fx["match_date"].split(" ")[0]
+        fx["predicted_total_corners"] = round((fx["predicted_home_corners"] or 0) + (fx["predicted_away_corners"] or 0), 2)
+        fx["predicted_total_fouls"] = round((fx["predicted_home_fouls"] or 0) + (fx["predicted_away_fouls"] or 0), 2)
+        fx["any_cold_start"] = bool(fx["any_cold_start"])
+        fx["any_warm_start"] = False
+
+    return {"source": "own_model", "source_label": "our own model (single-season, FBref-trained)",
+            "window_label": f"{format_window_date(window_start)} to {format_window_date(window_end)}",
+            "fixtures": fixtures}
+
+
+def format_window_date(raw):
+    return raw.split(" ")[0] if raw else raw
+
+
+def load_betting_data():
+    data = {}
+
+    corner_kick_data = load_corner_kick_data()
+    if corner_kick_data:
+        data["EPL"] = corner_kick_data
+
+    conn = sqlite3.connect(DB_PATH)
+    for league in config.LEAGUES:
+        if league == "EPL":
+            continue
+        own_data = load_own_betting_predictions(conn, league)
+        if own_data:
+            data[league] = own_data
+    conn.close()
+
+    return data if data else None
 
 
 # ---------------------------------------------------------------------------
@@ -812,7 +899,6 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows, betti
     fixtures_json = json.dumps(fixture_payloads)
     league_table_json = json.dumps(league_table_rows)
     betting_json = json.dumps(betting_data)
-    betting_league_json = json.dumps(BETTING_LEAGUE)
     leagues_json = json.dumps(leagues)
     default_league_json = json.dumps(default_league)
     default_view_json = json.dumps(default_view)
@@ -1255,7 +1341,6 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows, betti
     const fixturesData = {fixtures_json};
     const leagueTableData = {league_table_json};
     const bettingData = {betting_json};
-    const BETTING_LEAGUE = {betting_league_json};
     const leagues = {leagues_json};
 
     let currentLeague = null;
@@ -1962,15 +2047,31 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows, betti
     }}
 
     function renderBettingCard(fx) {{
-        const homePct = Math.max(0, Math.round((fx.home_win_prob || 0) * 100));
-        const drawPct = Math.max(0, Math.round((fx.draw_prob || 0) * 100));
-        const awayPct = Math.max(0, 100 - homePct - drawPct);
+        const hasResultModel = fx.expected_home_goals !== undefined && fx.expected_home_goals !== null;
 
         let badge = '';
         if (fx.any_cold_start) {{
             badge = `<div class="confidence-badge low">Low confidence - team(s) new to our data</div>`;
         }} else if (fx.any_warm_start) {{
             badge = `<div class="confidence-badge estimated">Estimated - early-season form</div>`;
+        }}
+
+        let resultSection = '';
+        if (hasResultModel) {{
+            const homePct = Math.max(0, Math.round((fx.home_win_prob || 0) * 100));
+            const drawPct = Math.max(0, Math.round((fx.draw_prob || 0) * 100));
+            const awayPct = Math.max(0, 100 - homePct - drawPct);
+            resultSection = `
+                <div class="betting-xg">Expected goals: <strong>${{num(fx.expected_home_goals, 2)}} - ${{num(fx.expected_away_goals, 2)}}</strong></div>
+                <div class="result-bar">
+                    <span class="rb-home" style="width:${{homePct}}%">${{homePct >= 12 ? homePct + '%' : ''}}</span>
+                    <span class="rb-draw" style="width:${{drawPct}}%">${{drawPct >= 12 ? drawPct + '%' : ''}}</span>
+                    <span class="rb-away" style="width:${{awayPct}}%">${{awayPct >= 12 ? awayPct + '%' : ''}}</span>
+                </div>
+                <div class="betting-legend"><span>Home win</span><span>Draw</span><span>Away win</span></div>
+                <div class="betting-market-row"><span class="betting-market-label">BTTS</span><span>${{pct(fx.btts_yes_prob)}}</span></div>
+                <div class="betting-market-row"><span class="betting-market-label">Over/Under 2.5</span><span>${{pct(fx.over_2_5_prob)}} / ${{pct(fx.under_2_5_prob)}}</span></div>
+            `;
         }}
 
         return `
@@ -1980,16 +2081,8 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows, betti
                     <span class="betting-date">${{fx.match_date_display || formatDate(fx.match_date)}}</span>
                 </div>
                 ${{badge}}
-                <div class="betting-xg">Expected goals: <strong>${{num(fx.expected_home_goals, 2)}} - ${{num(fx.expected_away_goals, 2)}}</strong></div>
-                <div class="result-bar">
-                    <span class="rb-home" style="width:${{homePct}}%">${{homePct >= 12 ? homePct + '%' : ''}}</span>
-                    <span class="rb-draw" style="width:${{drawPct}}%">${{drawPct >= 12 ? drawPct + '%' : ''}}</span>
-                    <span class="rb-away" style="width:${{awayPct}}%">${{awayPct >= 12 ? awayPct + '%' : ''}}</span>
-                </div>
-                <div class="betting-legend"><span>Home win</span><span>Draw</span><span>Away win</span></div>
+                ${{resultSection}}
                 <div class="betting-markets">
-                    <div class="betting-market-row"><span class="betting-market-label">BTTS</span><span>${{pct(fx.btts_yes_prob)}}</span></div>
-                    <div class="betting-market-row"><span class="betting-market-label">Over/Under 2.5</span><span>${{pct(fx.over_2_5_prob)}} / ${{pct(fx.under_2_5_prob)}}</span></div>
                     <div class="betting-market-row"><span class="betting-market-label">Corners</span><span>${{num(fx.predicted_home_corners)}} - ${{num(fx.predicted_away_corners)}} (${{num(fx.predicted_total_corners)}})</span></div>
                     <div class="betting-market-row"><span class="betting-market-label">Yellow cards</span><span>${{num(fx.predicted_home_yellows)}} - ${{num(fx.predicted_away_yellows)}}</span></div>
                     <div class="betting-market-row"><span class="betting-market-label">Fouls</span><span>${{num(fx.predicted_home_fouls)}} - ${{num(fx.predicted_away_fouls)}} (${{num(fx.predicted_total_fouls)}})</span></div>
@@ -2003,20 +2096,18 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows, betti
     function renderBettingView() {{
         renderSubhead();
         const contentEl = document.getElementById('bettingContent');
+        const leagueData = bettingData ? bettingData[currentLeague] : null;
 
-        if (currentLeague !== BETTING_LEAGUE) {{
-            contentEl.innerHTML = `<p class="muted">Betting predictions are only available for ${{BETTING_LEAGUE}} right now - the model behind this tab is trained on Premier League data specifically.</p>`;
-            return;
-        }}
-
-        if (!bettingData || !bettingData.fixtures || !bettingData.fixtures.length) {{
-            contentEl.innerHTML = `<p class="muted">No betting predictions available - The Corner Kick's data may not have run recently.</p>`;
+        if (!leagueData || !leagueData.fixtures || !leagueData.fixtures.length) {{
+            const available = bettingData ? Object.keys(bettingData) : [];
+            const availText = available.length ? ` Currently available for: ${{available.join(', ')}}.` : '';
+            contentEl.innerHTML = `<p class="muted">No betting predictions available for ${{currentLeague}}.${{availText}}</p>`;
             return;
         }}
 
         contentEl.innerHTML = `
-            <div class="betting-note">Round ${{bettingData.round_number}} predictions from The Corner Kick - a separate modeling project, not derived from the FBref data elsewhere on this page. Not betting advice.</div>
-            <div class="betting-grid">${{bettingData.fixtures.map(renderBettingCard).join('')}}</div>
+            <div class="betting-note">${{leagueData.window_label}} predictions from ${{leagueData.source_label}}${{leagueData.source === 'own_model' ? ' - a lighter model than The Corner Kick\\'s EPL one, trained on a single in-progress season' : ', a separate modeling project, not derived from the FBref data elsewhere on this page'}}. Not betting advice.</div>
+            <div class="betting-grid">${{leagueData.fixtures.map(renderBettingCard).join('')}}</div>
         `;
     }}
 
@@ -2088,7 +2179,11 @@ def main():
         f.write(html)
 
     total_fixtures = sum(len(p["fixtures"]) for p in fixture_payloads)
-    betting_note = f", {len(betting_data['fixtures'])} betting predictions" if betting_data else ", no betting data"
+    if betting_data:
+        counts = ", ".join(f"{lg}: {len(d['fixtures'])}" for lg, d in betting_data.items())
+        betting_note = f", betting predictions ({counts})"
+    else:
+        betting_note = ", no betting data"
     print(f"Wrote {OUTPUT_FILE}: {len(players)} players, {len(team_rows)} team rows, "
           f"{len(fixture_payloads)} leagues with fixtures ({total_fixtures} fixtures total){betting_note}.")
 
