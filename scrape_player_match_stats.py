@@ -206,6 +206,30 @@ def scrape_league(conn, league_key, league_cfg):
                 except Exception as e:
                     print(f"    WARNING: events processing failed for match {match_id}: {e}")
 
+                # --- Team stats (possession, corners, cards, fouls, etc.) ---
+                try:
+                    if match_info:
+                        team_stats = common.get_team_match_stats(fbref, match_id)
+                        team_stats_rows = common.build_team_match_stats_rows(
+                            team_stats, match_id, match_info.get("date"), season, league_key,
+                            match_info.get("home_team"), match_info.get("away_team"),
+                        )
+                        if team_stats_rows:
+                            conn.executemany(
+                                """
+                                INSERT OR REPLACE INTO team_match_stats
+                                (league, team, opponent, match_id, match_date, season, is_home,
+                                 possession_pct, shots_on_target, shots_total, saves, shots_faced,
+                                 cards_yellow, cards_red, fouls, corners, crosses, interceptions, offsides)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                team_stats_rows,
+                            )
+                            conn.commit()
+                            print(f"    Saved team stats for both sides (corners: {team_stats.get('home_corners')}-{team_stats.get('away_corners')}).")
+                except Exception as e:
+                    print(f"    WARNING: team stats processing failed for match {match_id}: {e}")
+
             except Exception as e:
                 import traceback
                 print(f"    ERROR on match {match_id}: {e}")
