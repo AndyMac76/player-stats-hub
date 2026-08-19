@@ -105,17 +105,12 @@ def build_feature_row(home_team, away_team, team_form, league_avg, features):
     return [values[c] for c in features]
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--league", default="MLS", choices=list(config.LEAGUES.keys()))
-    args = parser.parse_args()
-    league = args.league
-
+def predict_league(league):
     conn = sqlite3.connect(config.DB_PATH)
 
     played_df = load_played_matches(conn, league)
     if played_df["match_id"].nunique() < 30:
-        print(f"[{league}] Not enough played-match data yet - run train_betting_models.py first once there's more.")
+        print(f"[{league}] Not enough played-match data yet - skipping for now.")
         conn.close()
         return
 
@@ -220,6 +215,29 @@ def main():
               f"fouls {r[9]}-{r[10]} | shots {r[11]}-{r[12]} | SOT {r[13]}-{r[14]}")
     if skipped:
         print(f"\n[{league}] Skipped {skipped} fixtures (no data even with league-average fallback).")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--league", choices=list(config.LEAGUES.keys()), default=None,
+        help="Predict only this league instead of every active league except EPL "
+             "(EPL already has its own richer model via The Corner Kick).",
+    )
+    args = parser.parse_args()
+
+    if args.league:
+        targets = [args.league]
+    else:
+        targets = [lg for lg in config.active_leagues() if lg != "EPL"]
+
+    for league in targets:
+        try:
+            predict_league(league)
+        except Exception as e:
+            import traceback
+            print(f"[{league}] ERROR predicting betting stats: {e}")
+            traceback.print_exc()
 
 
 if __name__ == "__main__":

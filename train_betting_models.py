@@ -201,31 +201,50 @@ def train_market(training_df, market_key, market_cfg, league_key):
     joblib.dump(away_model, f"{league_key.lower()}_{market_key}_away_model.joblib")
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--league", default="MLS", choices=list(config.LEAGUES.keys()))
-    args = parser.parse_args()
-
+def train_league(league):
     conn = sqlite3.connect(config.DB_PATH)
-    df = load_played_matches(conn, args.league)
+    df = load_played_matches(conn, league)
     conn.close()
 
     match_count = df["match_id"].nunique()
-    print(f"[{args.league}] {match_count} played matches with team stats available.")
+    print(f"[{league}] {match_count} played matches with team stats available.")
     if match_count < 30:
-        print(f"[{args.league}] Not enough data to train on yet (need at least ~30 matches) - stopping.")
+        print(f"[{league}] Not enough data to train on yet (need at least ~30 matches) - skipping for now.")
         return
 
     training_df = build_training_rows(df)
-    print(f"[{args.league}] Built {len(training_df)} training rows.\n")
+    print(f"[{league}] Built {len(training_df)} training rows.\n")
 
     for market_key, market_cfg in MARKETS.items():
-        train_market(training_df, market_key, market_cfg, args.league)
+        train_market(training_df, market_key, market_cfg, league)
 
-    with open(f"{args.league.lower()}_betting_features.json", "w") as f:
+    with open(f"{league.lower()}_betting_features.json", "w") as f:
         json.dump({k: v["features"] for k, v in MARKETS.items()}, f, indent=2)
 
-    print(f"\n[{args.league}] Done. Models saved as {args.league.lower()}_<market>_<home|away>_model.joblib")
+    print(f"[{league}] Done. Models saved as {league.lower()}_<market>_<home|away>_model.joblib\n")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--league", choices=list(config.LEAGUES.keys()), default=None,
+        help="Train only this league instead of every active league except EPL "
+             "(EPL already has its own richer model via The Corner Kick).",
+    )
+    args = parser.parse_args()
+
+    if args.league:
+        targets = [args.league]
+    else:
+        targets = [lg for lg in config.active_leagues() if lg != "EPL"]
+
+    for league in targets:
+        try:
+            train_league(league)
+        except Exception as e:
+            import traceback
+            print(f"[{league}] ERROR training betting models: {e}")
+            traceback.print_exc()
 
 
 if __name__ == "__main__":
