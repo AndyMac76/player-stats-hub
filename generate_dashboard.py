@@ -1271,7 +1271,7 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows):
         if (currentView === 'fixtures') {{
             const data = fixturesData.find(d => d.league === currentLeague);
             document.getElementById('subhead').textContent = data
-                ? `Window: ${{data.window_start}} to ${{data.window_end}} - stats below are each player's totals over their team's last ${{data.last_n}} fixtures, whether they featured or not. Click a player's name to jump to their row in Players.`
+                ? `Window: ${{formatDate(data.window_start)}} to ${{formatDate(data.window_end)}} - stats below are each player's totals over their team's last ${{data.last_n}} fixtures, whether they featured or not. Click a player's name to jump to their row in Players.`
                 : `No fixtures found for this league's current gameweek.`;
         }} else if (currentView === 'players') {{
             const subheadText = {{
