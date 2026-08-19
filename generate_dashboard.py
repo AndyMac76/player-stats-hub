@@ -724,11 +724,11 @@ def generate_html(players, team_rows, fixture_payloads):
         align-items: center;
         margin-bottom: 16px;
     }}
-    .league-tabs, .toggle-group {{
+    .toggle-group {{
         display: flex;
         gap: 8px;
     }}
-    .league-tab, .toggle-btn {{
+    .toggle-btn {{
         background: var(--input-bg);
         color: var(--text-dim);
         border: 1px solid var(--border);
@@ -737,10 +737,10 @@ def generate_html(players, team_rows, fixture_payloads):
         font-size: 13px;
         cursor: pointer;
     }}
-    .league-tab:hover, .toggle-btn:hover {{
+    .toggle-btn:hover {{
         color: #ffffff;
     }}
-    .league-tab.active, .toggle-btn.active {{
+    .toggle-btn.active {{
         background: var(--border);
         color: #ffffff;
         border-color: var(--green);
@@ -901,6 +901,52 @@ def generate_html(players, team_rows, fixture_payloads):
     .window-note {{ font-size: 11px; color: var(--text-dim); margin-bottom: 12px; }}
     .spark {{ vertical-align: middle; margin-right: 6px; }}
     .dnp {{ color: var(--red); font-weight: 700; }}
+    .league-picker {{ max-width: 720px; }}
+    .league-picker h2 {{ font-size: 16px; font-weight: 500; color: var(--text-dim); margin: 0 0 16px; }}
+    .league-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 14px;
+    }}
+    .league-card {{
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 24px 18px;
+        font-size: 18px;
+        font-weight: 600;
+        cursor: pointer;
+        text-align: center;
+        transition: border-color 0.15s, background 0.15s;
+    }}
+    .league-card:hover {{ border-color: var(--accent); background: var(--accent-dim); }}
+    .league-indicator {{
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 15px;
+        font-weight: 600;
+    }}
+    .league-indicator button {{
+        background: none;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 4px 10px;
+        color: var(--text-dim);
+        font-size: 12px;
+        font-weight: 400;
+        cursor: pointer;
+    }}
+    .league-indicator button:hover {{ border-color: var(--accent); color: var(--accent); }}
+    .team-row {{ cursor: pointer; }}
+    .team-row:hover {{ background: var(--accent-dim); }}
+    .team-expand-row td {{
+        background: var(--card-bg);
+        padding: 14px 18px;
+    }}
+    .team-roster-table {{ width: 100%; }}
+    .team-roster-table th {{ font-size: 11px; color: var(--text-dim); text-align: left; padding: 4px 8px; }}
+    .team-roster-table td {{ padding: 4px 8px; }}
     .scouting-panel {{
         display: none;
         margin-bottom: 16px;
@@ -936,13 +982,22 @@ def generate_html(players, team_rows, fixture_payloads):
 <h1>Player Stats Hub</h1>
 <p class="muted" id="subhead"></p>
 
+<div class="league-picker" id="leaguePickerView">
+    <h2>Select a league</h2>
+    <div class="league-grid" id="leagueGrid"></div>
+</div>
+
+<div id="dashboardArea">
 <div class="toolbar">
+    <div class="league-indicator" id="leagueIndicator">
+        <span id="leagueIndicatorLabel"></span>
+        <button id="changeLeagueBtn">Change league</button>
+    </div>
     <div class="toggle-group" id="viewToggle">
         <button class="toggle-btn" data-view="fixtures">Fixtures</button>
         <button class="toggle-btn" data-view="players">Players</button>
         <button class="toggle-btn" data-view="teams">Teams</button>
     </div>
-    <div class="league-tabs" id="leagueTabs"></div>
     <div class="toggle-group" id="statModeToggle">
         <button class="toggle-btn active" data-mode="rolling">Last {FORM_WINDOW} Matches</button>
         <button class="toggle-btn" data-mode="teamfx">Last {FORM_WINDOW} Team Fixtures</button>
@@ -990,6 +1045,7 @@ def generate_html(players, team_rows, fixture_payloads):
     <tbody id="teamTableBody"></tbody>
 </table>
 </div>
+</div>
 
 <script>
     const players = {players_json};
@@ -997,8 +1053,9 @@ def generate_html(players, team_rows, fixture_payloads):
     const fixturesData = {fixtures_json};
     const leagues = {leagues_json};
 
-    let currentLeague = {default_league_json};
+    let currentLeague = null;
     let currentView = {default_view_json};
+    const DEFAULT_LEAGUE = {default_league_json};
     let statMode = "rolling";
     let pinnedPlayerId = null;
     let sortKey = "rolling_goals";
@@ -1006,6 +1063,7 @@ def generate_html(players, team_rows, fixture_payloads):
     let teamSortKey = "goals";
     let teamSortDir = -1;
     let activeMatchId = null;
+    let expandedTeam = null;
 
     const TEXT_FILTER_KEYS = new Set(["player_name"]);
     const EXACT_FILTER_KEYS = new Set(["team", "position"]);
@@ -1072,23 +1130,35 @@ def generate_html(players, team_rows, fixture_payloads):
         else renderTeamTable();
     }}
 
-    function setupLeagueTabs() {{
-        const tabsEl = document.getElementById('leagueTabs');
-        tabsEl.innerHTML = leagues.map(l =>
-            `<button class="league-tab${{l === currentLeague ? ' active' : ''}}" data-league="${{l}}">${{l}}</button>`
-        ).join('');
-        tabsEl.querySelectorAll('.league-tab').forEach(btn => {{
-            btn.addEventListener('click', () => {{
-                if (btn.dataset.league === currentLeague) return;
-                currentLeague = btn.dataset.league;
-                activeMatchId = null;
-                clearPin();
-                closeScouting();
-                setupLeagueTabs();
-                setupDropdownFilters();
-                renderCurrentView();
-            }});
+    function renderLeaguePicker() {{
+        const gridEl = document.getElementById('leagueGrid');
+        gridEl.innerHTML = leagues.map(l => `<div class="league-card" data-league="${{l}}">${{l}}</div>`).join('');
+        gridEl.querySelectorAll('.league-card').forEach(card => {{
+            card.addEventListener('click', () => enterLeague(card.dataset.league));
         }});
+    }}
+
+    function showLeaguePicker() {{
+        document.getElementById('leaguePickerView').style.display = 'block';
+        document.getElementById('dashboardArea').style.display = 'none';
+        const url = new URL(window.location);
+        url.searchParams.delete('league');
+        url.searchParams.delete('view');
+        url.searchParams.delete('player');
+        window.history.replaceState({{}}, '', url);
+    }}
+
+    function enterLeague(league) {{
+        currentLeague = league;
+        activeMatchId = null;
+        expandedTeam = null;
+        clearPin();
+        closeScouting();
+        document.getElementById('leaguePickerView').style.display = 'none';
+        document.getElementById('dashboardArea').style.display = 'block';
+        document.getElementById('leagueIndicatorLabel').textContent = league;
+        setupDropdownFilters();
+        renderCurrentView();
     }}
 
     function setupStatModeToggle() {{
@@ -1502,7 +1572,7 @@ def generate_html(players, team_rows, fixture_payloads):
         currentLeague = match.league;
         document.getElementById('pinnedLabel').textContent = `Showing: ${{match.player_name}} (${{match.team}})`;
         document.getElementById('pinnedChip').classList.add('visible');
-        setupLeagueTabs();
+        document.getElementById('leagueIndicatorLabel').textContent = match.league;
         switchView('players');
     }}
 
@@ -1524,6 +1594,38 @@ def generate_html(players, team_rows, fixture_payloads):
     const TEAM_COLUMNS = ["squad_size", "matches_played", "goals", "assists", "shots", "shots_on_target",
                            "tackles_won", "interceptions", "fouls", "fouls_drawn", "cards_yellow", "saves", "goals_conceded"];
 
+    function renderTeamRoster(team) {{
+        const roster = players
+            .filter(p => p.league === currentLeague && p.team === team)
+            .slice()
+            .sort((a, b) => (b.season_minutes_played || 0) - (a.season_minutes_played || 0));
+
+        if (!roster.length) {{
+            return `<p class="muted">No player data for ${{team}} yet this season.</p>`;
+        }}
+
+        const cols = ["goals", "assists", "shots", "shots_on_target", "tackles_won",
+                       "interceptions", "fouls", "fouls_drawn", "minutes_played"];
+        const headerCells = cols.map(c => `<th title="${{STAT_INFO[c].full}}">${{STAT_INFO[c].abbr}}</th>`).join('');
+        const rows = roster.map(p => {{
+            const cells = cols.map(c => `<td>${{p[`season_${{c}}`]}}</td>`).join('');
+            return `
+                <tr>
+                    <td class="player-name"><button data-player="${{p.player_id}}" data-league="${{p.league}}">${{p.player_name}}</button></td>
+                    <td>${{p.position}}</td>
+                    ${{cells}}
+                </tr>
+            `;
+        }}).join('');
+
+        return `
+            <table class="team-roster-table">
+                <thead><tr><th>Player</th><th>Pos</th>${{headerCells}}</tr></thead>
+                <tbody>${{rows}}</tbody>
+            </table>
+        `;
+    }}
+
     function renderTeamTable() {{
         renderSubhead();
         let rows = teamRows.filter(t => t.league === currentLeague);
@@ -1539,12 +1641,33 @@ def generate_html(players, team_rows, fixture_payloads):
             tbody.innerHTML = `<tr><td colspan="14" class="muted">No current-season data yet for this league.</td></tr>`;
             return;
         }}
-        tbody.innerHTML = rows.map(t => `
-            <tr>
-                <td>${{t.team}}</td>
-                ${{TEAM_COLUMNS.map(c => `<td>${{t[c]}}</td>`).join('')}}
-            </tr>
-        `).join('');
+        tbody.innerHTML = rows.map(t => {{
+            const mainRow = `
+                <tr class="team-row" data-team="${{t.team}}">
+                    <td>${{t.team}}</td>
+                    ${{TEAM_COLUMNS.map(c => `<td>${{t[c]}}</td>`).join('')}}
+                </tr>
+            `;
+            if (t.team !== expandedTeam) return mainRow;
+            return mainRow + `
+                <tr class="team-expand-row">
+                    <td colspan="${{TEAM_COLUMNS.length + 1}}">${{renderTeamRoster(t.team)}}</td>
+                </tr>
+            `;
+        }}).join('');
+
+        tbody.querySelectorAll('tr.team-row').forEach(tr => {{
+            tr.addEventListener('click', () => {{
+                expandedTeam = expandedTeam === tr.dataset.team ? null : tr.dataset.team;
+                renderTeamTable();
+            }});
+        }});
+        tbody.querySelectorAll('button[data-player]').forEach(btn => {{
+            btn.addEventListener('click', (e) => {{
+                e.stopPropagation();
+                showPlayer(btn.dataset.player, btn.dataset.league);
+            }});
+        }});
     }}
 
     function setupTeamSorting() {{
@@ -1586,12 +1709,14 @@ def generate_html(players, team_rows, fixture_payloads):
                 document.getElementById('pinnedChip').classList.add('visible');
             }}
         }}
+        return currentLeague !== null;
     }}
 
     // ---- init ----
 
-    applyUrlParams();
-    setupLeagueTabs();
+    const hasLeagueFromUrl = applyUrlParams();
+    renderLeaguePicker();
+    document.getElementById('changeLeagueBtn').addEventListener('click', showLeaguePicker);
     setupViewToggle();
     setupStatModeToggle();
     renderPlayerTableHead();
@@ -1600,7 +1725,12 @@ def generate_html(players, team_rows, fixture_payloads):
     document.getElementById('playerView').style.display = currentView === 'players' ? 'block' : 'none';
     document.getElementById('teamView').style.display = currentView === 'teams' ? 'block' : 'none';
     document.getElementById('statModeToggle').style.display = currentView === 'players' ? 'flex' : 'none';
-    renderCurrentView();
+
+    if (hasLeagueFromUrl) {{
+        enterLeague(currentLeague);
+    }} else {{
+        showLeaguePicker();
+    }}
 </script>
 
 </body>
