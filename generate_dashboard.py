@@ -347,11 +347,41 @@ def build_rolling_series(match_df):
 
 def get_team_last_n_fixtures(fixtures_df, n=LAST_N):
     """(league, team) -> that team's last n PLAYED match_ids, oldest to
-    newest. `fixtures_df` must already be filtered to is_played=1."""
+    newest, keyed by the raw team name exactly as fixtures.team spells it
+    (the schedule page's naming convention). `fixtures_df` must already be
+    filtered to is_played=1.
+
+    A caller whose own team name comes from a different FBref page (e.g.
+    player_match_stats' match-report naming, which doesn't always agree
+    with the schedule page - "Newcastle" vs "Newcastle United") should
+    look this up via find_team_fixtures() below rather than a direct dict
+    access, since not every league lists every such pair as an explicit
+    alias - some rely entirely on names_match()'s substring fallback."""
     result = {}
     for (league, team), group in fixtures_df.sort_values(["league", "team", "match_date"]).groupby(["league", "team"]):
         result[(league, team)] = group["match_id"].tail(n).tolist()
     return result
+
+
+def find_by_team_alias(d, league, team):
+    """Alias/substring-aware lookup into a dict keyed by (league, team) -
+    a plain dict .get() misses whenever `team` and the dict's own keys
+    come from different FBref pages' naming conventions for the same club
+    and the league's alias dict doesn't happen to spell out that exact
+    pair (several leagues deliberately rely on names_match()'s substring
+    fallback for most pairs instead of listing every one). Found via
+    Newcastle's last-5-games average showing all zeros despite having a
+    real played match - "Newcastle" (fixtures) vs "Newcastle United"
+    (player_match_stats) has no explicit EPL alias, so exact-key lookups
+    were silently missing it."""
+    exact = d.get((league, team))
+    if exact is not None:
+        return exact
+    aliases = config.LEAGUES.get(league, {}).get("team_aliases", {})
+    for (d_league, d_team), value in d.items():
+        if d_league == league and common.names_match(team, d_team, aliases):
+            return value
+    return None
 
 
 def build_team_fixture_series(match_df, fixtures_df):
@@ -375,7 +405,7 @@ def build_team_fixture_series(match_df, fixtures_df):
 
     series = {}
     for (league, player_id), team in last_team.items():
-        match_ids = team_fixtures.get((league, team), [])
+        match_ids = find_by_team_alias(team_fixtures, league, team) or []
         row = {"fixtures_in_window": len(match_ids)}
         matches_played = sum(1 for mid in match_ids if (league, player_id, mid) in stat_lookup)
         row["matches_played"] = matches_played
@@ -404,14 +434,18 @@ def build_season_totals(season_df):
 
 def _team_match_averages(match_df, team_fixtures):
     """(league, team) -> {stat: avg}, averaging each stat's team-total
-    over the given (league, team) -> match_ids mapping."""
+    over the given (league, team) -> match_ids mapping. `team` here is
+    fixtures.team's naming (see get_team_last_n_fixtures) - match_df's
+    own team column can use a different FBref page's naming for the same
+    club, so rows are matched via names_match() (alias-or-substring
+    aware), not exact equality."""
     rows = {}
     for (league, team), match_ids in team_fixtures.items():
         if not match_ids:
             continue
-        subset = match_df[
-            (match_df["league"] == league) & (match_df["team"] == team) & (match_df["match_id"].isin(match_ids))
-        ]
+        aliases = config.LEAGUES.get(league, {}).get("team_aliases", {})
+        candidates = match_df[(match_df["league"] == league) & (match_df["match_id"].isin(match_ids))]
+        subset = candidates[candidates["team"].apply(lambda t: common.names_match(t, team, aliases))]
         n = len(match_ids)
         row = {}
         for c in CURATED_STAT_COLUMNS + GK_STAT_COLUMNS:
@@ -449,8 +483,8 @@ def build_team_summary(season_df, match_df, fixtures_df):
         away_group = group[group["venue"] == "Away"]
         home_matches = home_group["match_id"].nunique()
         away_matches = away_group["match_id"].nunique()
-        l5h = last5_home.get((league, team), {})
-        l5a = last5_away.get((league, team), {})
+        l5h = find_by_team_alias(last5_home, league, team) or {}
+        l5a = find_by_team_alias(last5_away, league, team) or {}
 
         for c in CURATED_STAT_COLUMNS + GK_STAT_COLUMNS:
             home_total = float(home_group[c].fillna(0).sum())
