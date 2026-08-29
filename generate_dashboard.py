@@ -1300,6 +1300,10 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows, betti
         <button class="toggle-btn" data-mode="teamfx">Last {FORM_WINDOW} Team Fixtures</button>
         <button class="toggle-btn" data-mode="season">Season Totals</button>
     </div>
+    <div class="toggle-group" id="teamStatModeToggle">
+        <button class="toggle-btn active" data-mode="season">Season Totals</button>
+        <button class="toggle-btn" data-mode="last5">Last {FORM_WINDOW} Games</button>
+    </div>
     <div class="pinned-chip" id="pinnedChip">
         <span id="pinnedLabel"></span>
         <button id="clearPin">clear</button>
@@ -1429,6 +1433,7 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows, betti
         document.getElementById('leagueTableView').style.display = view === 'table' ? 'block' : 'none';
         document.getElementById('bettingView').style.display = view === 'betting' ? 'block' : 'none';
         document.getElementById('statModeToggle').style.display = view === 'players' ? 'flex' : 'none';
+        document.getElementById('teamStatModeToggle').style.display = view === 'teams' ? 'flex' : 'none';
         renderCurrentView();
     }}
 
@@ -1500,7 +1505,10 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows, betti
             }}[statMode];
             document.getElementById('subhead').textContent = subheadText;
         }} else if (currentView === 'teams') {{
-            document.getElementById('subhead').textContent = `Season-to-date squad totals per team. Hover a column header for its full name.`;
+            const teamText = teamStatMode === 'season'
+                ? `Season-to-date per-game averages, split home/away. Hover a column header for its full name.`
+                : `Averages over each team's last {FORM_WINDOW} games, split home/away. Hover a column header for its full name.`;
+            document.getElementById('subhead').textContent = teamText;
         }} else if (currentView === 'table') {{
             document.getElementById('subhead').textContent = `Current-season standings, sorted by points then goal difference. Click a team on the Fixtures/Players/Teams views for more detail.`;
         }} else {{
@@ -1913,26 +1921,48 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows, betti
 
     // ---- Teams view ----
 
-    // Each stat shows four per-game averages, not a season total: season
-    // home avg, season away avg, last-{FORM_WINDOW}-games home avg, and
-    // last-{FORM_WINDOW}-games away avg - kept separate, not blended.
+    // Each stat has a season average and a last-{FORM_WINDOW}-games
+    // average, each split into home/away - toggled one time-window at a
+    // time (teamStatModeToggle) rather than all four numbers per stat
+    // shown at once, which got cluttered.
     const TEAM_STAT_ORDER = ["goals", "assists", "shots", "shots_on_target", "tackles_won",
                               "interceptions", "fouls", "fouls_drawn", "cards_yellow", "saves", "goals_conceded"];
 
-    const TEAM_COLUMNS = [{{ key: "matches_played", abbr: "M", full: "Matches Played" }}];
-    TEAM_STAT_ORDER.forEach(s => {{
-        const abbr = STAT_INFO[s].abbr, full = STAT_INFO[s].full;
-        TEAM_COLUMNS.push({{ key: `season_avg_home_${{s}}`, abbr: `${{abbr}}H`, full: `${{full}} - season average per HOME game` }});
-        TEAM_COLUMNS.push({{ key: `season_avg_away_${{s}}`, abbr: `${{abbr}}A`, full: `${{full}} - season average per AWAY game` }});
-        TEAM_COLUMNS.push({{ key: `last5_avg_home_${{s}}`, abbr: `${{abbr}}5H`, full: `${{full}} - average over last {FORM_WINDOW} HOME games` }});
-        TEAM_COLUMNS.push({{ key: `last5_avg_away_${{s}}`, abbr: `${{abbr}}5A`, full: `${{full}} - average over last {FORM_WINDOW} AWAY games` }});
-    }});
+    function buildTeamColumnSet(prefix, windowLabel) {{
+        const cols = [{{ key: "matches_played", abbr: "M", full: "Matches Played" }}];
+        TEAM_STAT_ORDER.forEach(s => {{
+            const abbr = STAT_INFO[s].abbr, full = STAT_INFO[s].full;
+            cols.push({{ key: `${{prefix}}_home_${{s}}`, abbr: `${{abbr}}H`, full: `${{full}} - ${{windowLabel}} average per HOME game` }});
+            cols.push({{ key: `${{prefix}}_away_${{s}}`, abbr: `${{abbr}}A`, full: `${{full}} - ${{windowLabel}} average per AWAY game` }});
+        }});
+        return cols;
+    }}
+
+    const TEAM_COLUMN_SETS = {{
+        season: buildTeamColumnSet("season_avg", "season"),
+        last5: buildTeamColumnSet("last5_avg", `last {FORM_WINDOW} games`),
+    }};
+    let teamStatMode = "season";
 
     function renderTeamTableHead() {{
         const headEl = document.getElementById('teamTableHead');
-        const cells = TEAM_COLUMNS.map(c => `<th data-key="${{c.key}}" title="${{c.full}}">${{c.abbr}}</th>`).join('');
+        const cells = TEAM_COLUMN_SETS[teamStatMode].map(c => `<th data-key="${{c.key}}" title="${{c.full}}">${{c.abbr}}</th>`).join('');
         headEl.innerHTML = `<tr><th data-key="team">Team</th>${{cells}}</tr>`;
         setupTeamSorting();
+    }}
+
+    function setupTeamStatModeToggle() {{
+        document.querySelectorAll('#teamStatModeToggle .toggle-btn').forEach(btn => {{
+            btn.addEventListener('click', () => {{
+                if (btn.dataset.mode === teamStatMode) return;
+                teamStatMode = btn.dataset.mode;
+                teamSortKey = `${{teamStatMode === 'season' ? 'season_avg' : 'last5_avg'}}_home_goals`;
+                teamSortDir = -1;
+                document.querySelectorAll('#teamStatModeToggle .toggle-btn').forEach(b => b.classList.toggle('active', b === btn));
+                renderTeamTableHead();
+                renderTeamTable();
+            }});
+        }});
     }}
 
     function renderTeamRoster(team) {{
@@ -1977,22 +2007,23 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows, betti
             }}
             return teamSortDir * ((av || 0) - (bv || 0));
         }});
+        const cols = TEAM_COLUMN_SETS[teamStatMode];
         const tbody = document.getElementById('teamTableBody');
         if (!rows.length) {{
-            tbody.innerHTML = `<tr><td colspan="${{TEAM_COLUMNS.length + 1}}" class="muted">No current-season data yet for this league.</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="${{cols.length + 1}}" class="muted">No current-season data yet for this league.</td></tr>`;
             return;
         }}
         tbody.innerHTML = rows.map(t => {{
             const mainRow = `
                 <tr class="team-row" data-team="${{t.team}}">
                     <td>${{t.team}}</td>
-                    ${{TEAM_COLUMNS.map(c => `<td>${{t[c.key]}}</td>`).join('')}}
+                    ${{cols.map(c => `<td>${{t[c.key]}}</td>`).join('')}}
                 </tr>
             `;
             if (t.team !== expandedTeam) return mainRow;
             return mainRow + `
                 <tr class="team-expand-row">
-                    <td colspan="${{TEAM_COLUMNS.length + 1}}">${{renderTeamRoster(t.team)}}</td>
+                    <td colspan="${{cols.length + 1}}">${{renderTeamRoster(t.team)}}</td>
                 </tr>
             `;
         }}).join('');
@@ -2161,6 +2192,7 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows, betti
     document.getElementById('changeLeagueBtn').addEventListener('click', showLeaguePicker);
     setupViewToggle();
     setupStatModeToggle();
+    setupTeamStatModeToggle();
     renderPlayerTableHead();
     renderTeamTableHead();
     document.getElementById('fixturesView').style.display = currentView === 'fixtures' ? 'block' : 'none';
@@ -2169,6 +2201,7 @@ def generate_html(players, team_rows, fixture_payloads, league_table_rows, betti
     document.getElementById('leagueTableView').style.display = currentView === 'table' ? 'block' : 'none';
     document.getElementById('bettingView').style.display = currentView === 'betting' ? 'block' : 'none';
     document.getElementById('statModeToggle').style.display = currentView === 'players' ? 'flex' : 'none';
+    document.getElementById('teamStatModeToggle').style.display = currentView === 'teams' ? 'flex' : 'none';
 
     if (hasLeagueFromUrl) {{
         enterLeague(currentLeague);
