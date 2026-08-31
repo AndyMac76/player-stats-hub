@@ -171,7 +171,11 @@ def pull_league(conn, league_key, league_cfg):
     season_aliases = league_cfg.get("season_team_aliases", {})
 
     print(f"\n[{league_key}] Pulling season aggregates for {season}...")
-    fbref = sd.FBref(leagues=sd_league, seasons=season)
+    # no_cache=True: soccerdata otherwise silently reuses whatever season-
+    # aggregate page it last fetched, which for an in-progress season can be
+    # weeks stale (found MLS's cached misc page stuck on Aug 8 data while
+    # matches went through Aug 30) instead of refreshing every run.
+    fbref = sd.FBref(leagues=sd_league, seasons=season, no_cache=True)
 
     try:
         try:

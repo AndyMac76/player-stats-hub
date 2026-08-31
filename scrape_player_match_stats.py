@@ -14,6 +14,18 @@ And once per league per run, cheaply from the schedule already being fetched:
     - fixtures             (full team fixture list, needed for "last 5 team
                              fixtures regardless of played" style dashboard stats)
 
+player_match_stats normally comes from FBref's season-aggregate pages
+(4 league-wide page loads per run, shared across every match) instead of a
+per-match "summary"+"keepers" fetch - validated in
+validate_aggregate_delta_approach.py at 100% accuracy on every reconstructible
+column. This only works for a team with exactly ONE unscraped match this run
+(a season-aggregate page only ever gives a CURRENT total, so two+ new matches
+for the same team can't be split back out) - teams with more than one pending
+match (a missed-week catch-up, a rescheduled midweek fixture) transparently
+fall back to the old, slower per-match fetch for just those matches. Lineups,
+match events, and team stats (corners etc.) always still need the per-match
+fetch either way - none of that is on the aggregate pages.
+
 Going-forward only. Resumable per league: on startup, checks which
 match_ids are already saved for that league/season and skips them.
 Lineups/events are fetched alongside stats for the same match_id, so they
@@ -27,6 +39,7 @@ Usage:
 import argparse
 import sqlite3
 import time
+from collections import Counter
 
 import pandas as pd
 import soccerdata as sd
@@ -119,6 +132,43 @@ def get_already_scraped_match_ids(conn, league, season):
         return set()
 
 
+def build_aggregate_fast_path(conn, league_key, league_cfg, match_ids, schedule_lookup):
+    """Figures out which teams have exactly one unscraped match this run
+    (the only case a season-aggregate delta can be trusted to attribute to
+    the right match_id - see fbref_scrape_common.py's module docstring on
+    build_rows_from_aggregate_delta), then fetches the season-aggregate
+    pages ONCE for the whole league if any team qualifies. Returns
+    (fast_path_teams, current_cumulative, prior_totals) - fast_path_teams is
+    empty and the other two are {} if nothing qualified (skips the fetch
+    entirely rather than paying for pages nobody will use)."""
+    team_pending_count = Counter()
+    for match_id in match_ids:
+        info = schedule_lookup.get(match_id)
+        if info:
+            team_pending_count[info["home_team"]] += 1
+            team_pending_count[info["away_team"]] += 1
+
+    fast_path_teams = {team for team, count in team_pending_count.items() if count == 1}
+    if not fast_path_teams:
+        return set(), {}, {}
+
+    print(f"[{league_key}] {len(fast_path_teams)} team(s) have exactly one pending match this run - "
+          f"fetching season-aggregate pages once instead of per-match for those.")
+
+    sd_league = league_cfg["sd_league"]
+    season = league_cfg["current_season"]
+    agg_fbref = sd.FBref(leagues=sd_league, seasons=season, no_cache=True)
+    try:
+        frames = common.fetch_season_aggregates(agg_fbref)
+    finally:
+        common.quit_driver(agg_fbref)
+
+    season_team_aliases = league_cfg.get("season_team_aliases", {})
+    current_cumulative = common.build_cumulative_lookup(frames, season_team_aliases)
+    prior_totals = common.build_prior_totals(conn, league_key, season)
+    return fast_path_teams, current_cumulative, prior_totals
+
+
 def scrape_league(conn, league_key, league_cfg):
     sd_league = league_cfg["sd_league"]
     season = league_cfg["current_season"]
@@ -150,26 +200,59 @@ def scrape_league(conn, league_key, league_cfg):
 
         print(f"[{league_key}] Found {len(match_ids)} completed matches to scrape for {season}.")
 
+        fast_path_teams, current_cumulative, prior_totals = build_aggregate_fast_path(
+            conn, league_key, league_cfg, match_ids, schedule_lookup,
+        )
+
         for i, match_id in enumerate(match_ids, start=1):
             print(f"[{league_key}] [{i}/{len(match_ids)}] Scraping match {match_id}...")
 
             try:
-                stat_frames = {}
-                for stat_type in config.STAT_TYPES:
-                    df = common.read_stat_with_recovery(fbref, stat_type, match_id)
-                    if df is not None:
-                        stat_frames[stat_type] = df
-
-                if not stat_frames:
-                    print(f"    No data returned for match {match_id}, skipping.")
-                    continue
-
                 match_info = schedule_lookup.get(match_id)
-                player_id_map = common.get_player_id_map(fbref, match_id)
-                merged = common.merge_stat_frames(
-                    stat_frames, match_id, match_info, season, league_key, team_aliases,
-                    player_id_map, canonical_lookup,
+                # One page fetch covers both the player-ID map and the Team
+                # Stats section (corners etc.) - they used to be two
+                # independent fetches of the exact same match report URL.
+                player_id_map, team_stats = common.get_match_page_data(fbref, match_id)
+
+                home_team = match_info.get("home_team") if match_info else None
+                away_team = match_info.get("away_team") if match_info else None
+                use_fast_path = (
+                    match_info is not None
+                    and home_team in fast_path_teams
+                    and away_team in fast_path_teams
                 )
+
+                merged = None
+                if use_fast_path:
+                    home_rows = common.build_rows_from_aggregate_delta(
+                        match_id, match_info, home_team, season, league_key, team_aliases,
+                        current_cumulative, prior_totals, player_id_map, canonical_lookup,
+                    )
+                    away_rows = common.build_rows_from_aggregate_delta(
+                        match_id, match_info, away_team, season, league_key, team_aliases,
+                        current_cumulative, prior_totals, player_id_map, canonical_lookup,
+                    )
+                    if home_rows is not None and away_rows is not None:
+                        merged = pd.concat([home_rows, away_rows], ignore_index=True)
+                        print(f"    Used season-aggregate fast path (skipped per-match stat fetch).")
+                    else:
+                        print(f"    Aggregate delta wasn't trustworthy for match {match_id} - falling back to per-match fetch.")
+
+                if merged is None:
+                    stat_frames = {}
+                    for stat_type in config.STAT_TYPES:
+                        df = common.read_stat_with_recovery(fbref, stat_type, match_id)
+                        if df is not None:
+                            stat_frames[stat_type] = df
+
+                    if not stat_frames:
+                        print(f"    No data returned for match {match_id}, skipping.")
+                        continue
+
+                    merged = common.merge_stat_frames(
+                        stat_frames, match_id, match_info, season, league_key, team_aliases,
+                        player_id_map, canonical_lookup,
+                    )
                 if merged is not None and not merged.empty:
                     merged.to_sql("player_match_stats", conn, if_exists="append", index=False)
                     print(f"    Saved {len(merged)} player rows.")
@@ -207,9 +290,10 @@ def scrape_league(conn, league_key, league_cfg):
                     print(f"    WARNING: events processing failed for match {match_id}: {e}")
 
                 # --- Team stats (possession, corners, cards, fouls, etc.) ---
+                # (team_stats already fetched above, alongside player_id_map,
+                # from the same page load)
                 try:
                     if match_info:
-                        team_stats = common.get_team_match_stats(fbref, match_id)
                         # match_info["date"] is a pandas Timestamp (straight from the
                         # schedule dataframe) - sqlite3's binder doesn't accept those
                         # directly, same reason write_fixtures_table() above stringifies
