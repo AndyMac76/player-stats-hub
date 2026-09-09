@@ -132,7 +132,7 @@ def get_already_scraped_match_ids(conn, league, season):
         return set()
 
 
-def build_aggregate_fast_path(conn, league_key, league_cfg, match_ids, schedule_lookup):
+def build_aggregate_fast_path(conn, fbref, league_key, league_cfg, match_ids, schedule_lookup):
     """Figures out which teams have exactly one unscraped match this run
     (the only case a season-aggregate delta can be trusted to attribute to
     the right match_id - see fbref_scrape_common.py's module docstring on
@@ -140,7 +140,17 @@ def build_aggregate_fast_path(conn, league_key, league_cfg, match_ids, schedule_
     pages ONCE for the whole league if any team qualifies. Returns
     (fast_path_teams, current_cumulative, prior_totals) - fast_path_teams is
     empty and the other two are {} if nothing qualified (skips the fetch
-    entirely rather than paying for pages nobody will use)."""
+    entirely rather than paying for pages nobody will use).
+
+    Reuses the caller's already-alive `fbref` driver rather than spinning
+    up a second sd.FBref(...)/Chrome instance - persistent_fbref.py's
+    profile directory is a single fixed path only one live Chrome process
+    can hold at a time, so a second instance here would fail to launch
+    ("cannot connect to chrome") while the caller's own driver is still
+    open, silently aborting the entire league's scrape before it even
+    reaches the per-match loop (found this exact way: EPL/CHAMP stuck at
+    the same "already-scraped" count for 3 runs straight after this fast
+    path was added, always failing here first)."""
     team_pending_count = Counter()
     for match_id in match_ids:
         info = schedule_lookup.get(match_id)
@@ -155,13 +165,13 @@ def build_aggregate_fast_path(conn, league_key, league_cfg, match_ids, schedule_
     print(f"[{league_key}] {len(fast_path_teams)} team(s) have exactly one pending match this run - "
           f"fetching season-aggregate pages once instead of per-match for those.")
 
-    sd_league = league_cfg["sd_league"]
     season = league_cfg["current_season"]
-    agg_fbref = sd.FBref(leagues=sd_league, seasons=season, no_cache=True)
+    original_no_cache = fbref.no_cache
+    fbref.no_cache = True
     try:
-        frames = common.fetch_season_aggregates(agg_fbref)
+        frames = common.fetch_season_aggregates(fbref)
     finally:
-        common.quit_driver(agg_fbref)
+        fbref.no_cache = original_no_cache
 
     season_team_aliases = league_cfg.get("season_team_aliases", {})
     current_cumulative = common.build_cumulative_lookup(frames, season_team_aliases)
@@ -201,7 +211,7 @@ def scrape_league(conn, league_key, league_cfg):
         print(f"[{league_key}] Found {len(match_ids)} completed matches to scrape for {season}.")
 
         fast_path_teams, current_cumulative, prior_totals = build_aggregate_fast_path(
-            conn, league_key, league_cfg, match_ids, schedule_lookup,
+            conn, fbref, league_key, league_cfg, match_ids, schedule_lookup,
         )
 
         for i, match_id in enumerate(match_ids, start=1):

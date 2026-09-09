@@ -445,7 +445,16 @@ def _team_match_averages(match_df, team_fixtures):
             continue
         aliases = config.LEAGUES.get(league, {}).get("team_aliases", {})
         candidates = match_df[(match_df["league"] == league) & (match_df["match_id"].isin(match_ids))]
-        subset = candidates[candidates["team"].apply(lambda t: common.names_match(t, team, aliases))]
+        # candidates.empty short-circuits before the .apply() filter below -
+        # boolean-indexing a DataFrame with an EMPTY non-bool-dtype Series
+        # (what .apply() returns when there are 0 rows to infer a dtype
+        # from) gets silently read as an empty COLUMN selection instead of
+        # a row mask, producing a 0x0 frame that KeyErrors on every column
+        # access below. Found this taking down the whole dashboard (every
+        # league) over one single match with no player_match_stats rows yet
+        # (a scraper-side failure, e.g. a Chrome driver conflict) - one bad
+        # match shouldn't be able to crash dashboard generation entirely.
+        subset = candidates if candidates.empty else candidates[candidates["team"].apply(lambda t: common.names_match(t, team, aliases))]
         n = len(match_ids)
         row = {}
         for c in CURATED_STAT_COLUMNS + GK_STAT_COLUMNS:
