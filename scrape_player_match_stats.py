@@ -132,6 +132,38 @@ def get_already_scraped_match_ids(conn, league, season):
         return set()
 
 
+def canonicalize_schedule_team_names(conn, league_key, team_aliases, schedule_lookup):
+    """Rewrites schedule_lookup's home_team/away_team in place to match
+    whichever spelling player_match_stats has already established for that
+    club this league, wherever the two differ.
+
+    Every write that follows (fixtures, and - since the season-aggregate
+    fast path added below - player_match_stats itself) ultimately sources
+    its team name from schedule_lookup, i.e. FBref's schedule page. That
+    page doesn't always spell a club the same way its match-report page
+    does ("Brighton" vs "Brighton & Hove Albion"), and match-report naming
+    is what every match scraped the old way (and everything before the
+    fast path existed) already used - so left alone, the fast path splits
+    a club across two different literal strings in the same column,
+    silently duplicating it on the dashboard's Teams view."""
+    established = {row[0] for row in conn.execute(
+        "SELECT DISTINCT team FROM player_match_stats WHERE league = ?", (league_key,)
+    )}
+    if not established:
+        return
+    resolved = {}
+    for info in schedule_lookup.values():
+        for key in ("home_team", "away_team"):
+            name = info[key]
+            if name in established or name in resolved:
+                continue
+            match = next((e for e in established if common.names_match(name, e, team_aliases)), None)
+            resolved[name] = match if match else name
+    for info in schedule_lookup.values():
+        for key in ("home_team", "away_team"):
+            info[key] = resolved.get(info[key], info[key])
+
+
 def build_aggregate_fast_path(conn, fbref, league_key, league_cfg, match_ids, schedule_lookup):
     """Figures out which teams have exactly one unscraped match this run
     (the only case a season-aggregate delta can be trusted to attribute to
@@ -189,6 +221,7 @@ def scrape_league(conn, league_key, league_cfg):
         schedule = get_match_ids(fbref)
         match_ids = schedule["game_id"].dropna().unique().tolist()
         schedule_lookup = build_schedule_lookup(schedule)
+        canonicalize_schedule_team_names(conn, league_key, team_aliases, schedule_lookup)
 
         if schedule_lookup:
             write_fixtures_table(conn, league_key, season, schedule_lookup)

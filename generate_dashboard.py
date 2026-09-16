@@ -474,6 +474,38 @@ def build_team_rolling_summary(match_df, fixtures_df):
     return _team_match_averages(match_df, home_fixtures), _team_match_averages(match_df, away_fixtures)
 
 
+def canonicalize_team_column(df, league_col="league", team_col="team"):
+    """Merges same-club name variants within `df[team_col]` (per league)
+    into one canonical spelling, returning a copy of df with that column
+    replaced. Picks the longest variant as canonical (e.g. "Newcastle
+    United" over "Newcastle") since it's almost always the fuller,
+    less-ambiguous club name.
+
+    player_match_stats.team used to always come from the match-report
+    page's own naming, so this was never needed there - but the
+    season-aggregate fast path (added to speed up scraping) sources a
+    team's name from the SCHEDULE page instead when using its shortcut,
+    and that page doesn't always spell a club the same way the match-report
+    page does ("Brighton" vs "Brighton & Hove Albion", "Newcastle" vs
+    "Newcastle United"...). Left unfixed, groupby(["league", "team"])
+    silently splits one club into two rows on the Teams view whenever both
+    spellings exist in the data - found via Season Totals showing e.g.
+    "Brighton" (1 match) and "Brighton & Hove Albion" (3 matches) as
+    separate teams that should have been one row on 4 matches."""
+    df = df.copy()
+    canonical_map = {}
+    for league, names in df.groupby(league_col)[team_col].unique().items():
+        aliases = config.LEAGUES.get(league, {}).get("team_aliases", {})
+        assigned = {}
+        for name in sorted(names, key=len, reverse=True):
+            match = next((c for c in assigned if common.names_match(name, c, aliases)), None)
+            assigned[name] = assigned[match] if match else name
+        for name, canonical in assigned.items():
+            canonical_map[(league, name)] = canonical
+    df[team_col] = df.apply(lambda r: canonical_map.get((r[league_col], r[team_col]), r[team_col]), axis=1)
+    return df
+
+
 def build_team_summary(season_df, match_df, fixtures_df):
     """Team-level summary for the Teams view: matches played, plus each
     stat as four per-game averages (not totals) - season-so-far and
@@ -483,6 +515,7 @@ def build_team_summary(season_df, match_df, fixtures_df):
     if season_df.empty:
         return rows
     last5_home, last5_away = build_team_rolling_summary(match_df, fixtures_df)
+    season_df = canonicalize_team_column(season_df)
 
     for (league, team), group in season_df.groupby(["league", "team"]):
         matches_played = int(group["match_id"].nunique())
