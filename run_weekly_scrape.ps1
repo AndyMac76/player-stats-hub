@@ -16,19 +16,18 @@
 #      being present)
 #   4. Pulls season-level aggregates into player_season_stats
 #   5. Recalculates the rolling 5-match averages into player_rolling_stats
-#   6. Retrains/repredicts corners/cards/fouls/shots betting models for
-#      every active league except EPL (which already has its own richer
-#      model via The Corner Kick) - leagues without ~30 played matches yet
-#      (SPFL/CHAMP/L1, as of when this was added) skip themselves
-#      automatically and start producing real predictions the moment
-#      they cross that threshold, with no further action needed
-#   7. Regenerates dashboard.html from the refreshed data - without this
+#   6. Regenerates dashboard.html from the refreshed data - without this
 #      step the database stays current but the actual page everyone looks
 #      at (including the desktop shortcuts and the live GitHub Pages copy)
 #      would silently go stale
-#   8. Commits and pushes dashboard.html so the live GitHub Pages copy
+#   7. Commits and pushes dashboard.html so the live GitHub Pages copy
 #      (andymac76.github.io/player-stats-hub) stays in sync automatically -
 #      non-fatal if it fails (e.g. no internet), just logged and skipped
+#
+# Betting predictions (both the in-house corners/cards/fouls/shots models
+# and The Corner Kick's EPL model) were pulled out of this pipeline and the
+# dashboard on 2026-09-22 - accuracy wasn't good enough to trust. Nothing
+# reads train_betting_models.py/predict_betting_stats.py anymore.
 #
 # Logs output to a timestamped file so a failure overnight is easy to
 # check the next day.
@@ -69,12 +68,6 @@ Write-Output "=== Pulling season aggregates ===" | Tee-Object -FilePath $LogFile
 
 Write-Output "=== Recalculating rolling stats ===" | Tee-Object -FilePath $LogFile -Append
 & $PythonExe "rolling_stats.py" 2>&1 | Tee-Object -FilePath $LogFile -Append
-
-Write-Output "=== Retraining betting models ===" | Tee-Object -FilePath $LogFile -Append
-& $PythonExe "train_betting_models.py" 2>&1 | Tee-Object -FilePath $LogFile -Append
-
-Write-Output "=== Generating betting predictions ===" | Tee-Object -FilePath $LogFile -Append
-& $PythonExe "predict_betting_stats.py" 2>&1 | Tee-Object -FilePath $LogFile -Append
 
 Write-Output "=== Regenerating dashboard.html ===" | Tee-Object -FilePath $LogFile -Append
 & $PythonExe "generate_dashboard.py" 2>&1 | Tee-Object -FilePath $LogFile -Append
