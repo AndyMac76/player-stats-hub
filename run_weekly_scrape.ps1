@@ -16,18 +16,29 @@
 #      being present)
 #   4. Pulls season-level aggregates into player_season_stats
 #   5. Recalculates the rolling 5-match averages into player_rolling_stats
-#   6. Regenerates dashboard.html from the refreshed data - without this
+#   6. Reviews last gameweek's locked-in MLS predictions against this
+#      run's freshly-scraped real results (mls_prediction_reviews),
+#      then locks in fresh predictions for the upcoming MLS gameweek
+#      (mls_predictions) using the now-up-to-date history - see
+#      mls_predictions.py/predict_mls_gameweek.py/review_mls_predictions.py.
+#      Standalone research, not wired into the dashboard yet - only the 5
+#      markets that beat a naive baseline in validate_mls_predictions.py
+#      (corners/cards/fouls/shots/SOT) are predicted; goals/result/BTTS/
+#      over-under didn't clear that bar and are deliberately left out.
+#   7. Regenerates dashboard.html from the refreshed data - without this
 #      step the database stays current but the actual page everyone looks
 #      at (including the desktop shortcuts and the live GitHub Pages copy)
 #      would silently go stale
-#   7. Commits and pushes dashboard.html so the live GitHub Pages copy
+#   8. Commits and pushes dashboard.html so the live GitHub Pages copy
 #      (andymac76.github.io/player-stats-hub) stays in sync automatically -
 #      non-fatal if it fails (e.g. no internet), just logged and skipped
 #
-# Betting predictions (both the in-house corners/cards/fouls/shots models
-# and The Corner Kick's EPL model) were pulled out of this pipeline and the
-# dashboard on 2026-09-22 - accuracy wasn't good enough to trust. Nothing
-# reads train_betting_models.py/predict_betting_stats.py anymore.
+# The OLD betting predictions (both the in-house corners/cards/fouls/shots
+# models and The Corner Kick's EPL model) were pulled out of this pipeline
+# and the dashboard on 2026-09-22 - accuracy wasn't good enough to trust.
+# Nothing reads train_betting_models.py/predict_betting_stats.py anymore;
+# step 6 above is a from-scratch replacement, built with an accuracy
+# review loop from day one.
 #
 # Logs output to a timestamped file so a failure overnight is easy to
 # check the next day.
@@ -68,6 +79,12 @@ Write-Output "=== Pulling season aggregates ===" | Tee-Object -FilePath $LogFile
 
 Write-Output "=== Recalculating rolling stats ===" | Tee-Object -FilePath $LogFile -Append
 & $PythonExe "rolling_stats.py" 2>&1 | Tee-Object -FilePath $LogFile -Append
+
+Write-Output "=== Reviewing last gameweek's MLS predictions ===" | Tee-Object -FilePath $LogFile -Append
+& $PythonExe "review_mls_predictions.py" 2>&1 | Tee-Object -FilePath $LogFile -Append
+
+Write-Output "=== Locking in MLS predictions for the upcoming gameweek ===" | Tee-Object -FilePath $LogFile -Append
+& $PythonExe "predict_mls_gameweek.py" 2>&1 | Tee-Object -FilePath $LogFile -Append
 
 Write-Output "=== Regenerating dashboard.html ===" | Tee-Object -FilePath $LogFile -Append
 & $PythonExe "generate_dashboard.py" 2>&1 | Tee-Object -FilePath $LogFile -Append
