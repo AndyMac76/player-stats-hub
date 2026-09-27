@@ -12,6 +12,18 @@ keyed by match_id), so this is safe to run every week even if nothing
 new has been played yet - it'll just report 0 newly reviewed and print
 the running all-time accuracy from whatever's already in the table.
 
+Also reconciles any prediction still keyed by one of pull_full_schedule.py's
+synthetic "pending-..." match IDs (assigned when FBref hasn't linked a real
+match-report ID to a fixture yet) against fixtures' now-current match_id for
+that same (team, opponent, match_date) - pull_full_schedule.py fully
+replaces the fixtures table each run, so a pending row silently disappears
+and gets replaced by a real-id row once FBref assigns one, and nothing else
+would ever tell mls_predictions its own copy of that id is stale. Found
+this the hard way on 2026-09-27: predict_mls_gameweek.py had locked in a
+prediction while its fixture was still "pending-...", and by the time the
+match was played and scraped under its real id, the two could no longer be
+matched up at all without this reconciliation step.
+
 Usage:
     python review_mls_predictions.py
 """
@@ -45,6 +57,26 @@ def create_tables(conn):
     conn.commit()
 
 
+def reconcile_pending_match_ids(conn):
+    pending = conn.execute(
+        "SELECT match_id, home_team, away_team, match_date FROM mls_predictions WHERE match_id LIKE 'pending-%'"
+    ).fetchall()
+    fixed = 0
+    for old_id, home, away, date in pending:
+        row = conn.execute(
+            "SELECT match_id FROM fixtures WHERE league = ? AND team = ? AND opponent = ? AND match_date = ? "
+            "AND is_home = 1 AND match_id NOT LIKE 'pending-%'",
+            (mp.LEAGUE, home, away, date),
+        ).fetchone()
+        if row:
+            conn.execute("UPDATE mls_predictions SET match_id = ? WHERE match_id = ?", (row[0], old_id))
+            fixed += 1
+    if fixed:
+        conn.commit()
+        print(f"[{mp.LEAGUE}] Reconciled {fixed} prediction(s) from a placeholder match_id to their real one.")
+    return fixed
+
+
 def find_reviewable_matches(conn):
     return conn.execute("""
         SELECT p.match_id, p.home_team, p.away_team,
@@ -70,6 +102,7 @@ def find_reviewable_matches(conn):
 def main():
     conn = sqlite3.connect(config.DB_PATH)
     create_tables(conn)
+    reconcile_pending_match_ids(conn)
 
     reviewable = find_reviewable_matches(conn)
     reviewed_at = datetime.now(timezone.utc).isoformat()

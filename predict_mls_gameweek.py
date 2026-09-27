@@ -60,6 +60,19 @@ def find_unpredicted_upcoming_matches(conn):
 
     upcoming = []
     for match_id in match_ids:
+        # pull_full_schedule.py assigns a synthetic "pending-..." match_id to
+        # any fixture FBref hasn't linked a real match-report ID to yet, then
+        # fully replaces the fixtures table (delete + re-insert) the next
+        # time it runs - so a "pending-..." row silently disappears and gets
+        # replaced by one keyed on the real ID once FBref assigns it, often
+        # not until right around kickoff for MLS specifically. Locking in a
+        # prediction against a "pending-..." id would orphan it permanently:
+        # the real played match's stats always land under the real id, which
+        # this row's id will never match. Skip these; they'll get predicted
+        # once a real id exists (still before kickoff, just a shorter
+        # lead time than the rest of the gameweek).
+        if match_id.startswith("pending-"):
+            continue
         row = conn.execute(
             "SELECT team, opponent, match_date, is_played FROM fixtures "
             "WHERE league = ? AND match_id = ? AND is_home = 1",
